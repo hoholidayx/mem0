@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Copy } from "lucide-react";
 import { CopyToClipboard } from "react-copy-to-clipboard";
+import { RuntimeStatus } from "@/components/self-hosted/runtime-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -75,6 +76,7 @@ export default function SetupPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
+  const [runtimeStatusVersion, setRuntimeStatusVersion] = useState(0);
   const [llmProvider, setLlmProvider] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
@@ -256,6 +258,7 @@ export default function SetupPage() {
     } catch (err) {
       setError(getErrorMessage(err, "Failed to save configuration"));
     } finally {
+      setRuntimeStatusVersion((version) => version + 1);
       setIsLoading(false);
     }
   };
@@ -375,6 +378,8 @@ export default function SetupPage() {
             {error && (
               <p className="text-sm text-onSurface-danger-primary">{error}</p>
             )}
+
+            {step > 0 && <RuntimeStatus key={runtimeStatusVersion} />}
 
             {step === 0 && (
               <form onSubmit={handleStep1} className="space-y-4">

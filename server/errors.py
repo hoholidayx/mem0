@@ -68,8 +68,18 @@ def new_request_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
-def upstream_error() -> UpstreamError:
+def upstream_error() -> HTTPException:
     exc = sys.exc_info()[1]
+    from server_state import MemoryNotReadyError
+
+    if isinstance(exc, MemoryNotReadyError):
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "memory_not_ready",
+                "message": "Configure LLM and embedding providers in Setup before using memory operations.",
+            },
+        )
     code, message = _classify(exc)
     rid = request_id_var.get()
     logging.exception("Upstream provider error (code=%s)", code)

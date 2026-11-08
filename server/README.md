@@ -86,9 +86,9 @@ mounts `mem0/` outside the `/app` server mount, with both paths watched for relo
 Neither path downloads or replaces the SDK when the container starts.
 The dashboard remains a separate image built from `server/dashboard/`.
 
-Server behavior and model configuration remain upstream defaults: configure real
-model credentials before starting the API. This build does not add a model-free
-startup mode, a fake key, or a fallback model. Keep `.env`, credentials and database
+The control plane starts before models are configured: create the first admin
+and configure real model credentials in Setup. Memory operations remain unavailable
+until initialization succeeds. No fake key or fallback model is used. Keep `.env`, credentials and database
 files outside Git; a root `.dockerignore` also excludes these from API builds.
 
 To verify the SDK install origin in a built image without starting the server or
@@ -326,8 +326,8 @@ Startup also accepts independent `MEM0_LLM_BASE_URL` / `MEM0_LLM_API_KEY` and
 `MEM0_EMBEDDER_BASE_URL` / `MEM0_EMBEDDER_API_KEY`, with the existing shared
 OpenAI environment variables as fallback. Model defaults remain
 `MEM0_DEFAULT_LLM_MODEL` and `MEM0_DEFAULT_EMBEDDER_MODEL`. Saved Dashboard
-configuration wins over environment defaults. This does not restore model-free
-startup: valid initial provider settings are still needed to initialize the API.
+configuration wins over environment defaults. Missing provider credentials keep
+the authenticated control plane available for Setup without initializing Memory.
 
 Compatible LLM endpoints must support OpenAI chat completions and the structured
 responses used by Mem0; embeddings endpoints must support `/embeddings`. A provider
@@ -345,3 +345,20 @@ For startup vector sizing, `MEM0_VECTOR_DIMS` defaults to 1536; optionally set
 The current ordinary pgvector vector HNSW index supports at most 2000 dimensions,
 so 2048-dimensional output needs a different index configuration. The server
 rejects incompatible explicit dimensions before replacing the active runtime.
+
+## First-run setup and health
+
+`GET /api/health` is control-plane liveness (200 once HTTP is serving).
+`GET /api/ready` returns 503 until the memory runtime has initialized, then 200.
+Use liveness for Compose dependencies so Dashboard can open during first-run
+setup; do not interpret it as model readiness or a provider connectivity test.
+Authenticated `GET /configure/status` distinguishes `needs_configuration`,
+`initialization_failed`, and `ready` without exposing credentials or exception text.
+Unauthenticated configuration and memory operations remain protected.
+
+Configure both model providers in Setup. Saving builds the runtime and persists
+configuration before marking it ready. Memory/search calls return a clear 503
+while uninitialized. An initialization or configuration-load error keeps the
+control plane reachable for repair but is never reported as ready. Existing valid
+configuration survives a failed update. Initialization does not prove remote
+credentials/model compatibility; use Quick Test deliberately after saving.

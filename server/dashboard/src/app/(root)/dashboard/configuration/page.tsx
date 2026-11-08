@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { RuntimeStatus } from "@/components/self-hosted/runtime-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +33,7 @@ type BundledProviders = {
 export default function ConfigurationPage() {
   const { isAdmin } = useAuth();
   const [isSaving, setIsSaving] = useState(false);
+  const [runtimeStatusVersion, setRuntimeStatusVersion] = useState(0);
   const [llmProvider, setLlmProvider] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
@@ -116,6 +118,7 @@ export default function ConfigurationPage() {
         variant: "destructive",
       });
     } finally {
+      setRuntimeStatusVersion((version) => version + 1);
       setIsSaving(false);
     }
   };
@@ -130,6 +133,8 @@ export default function ConfigurationPage() {
           </p>
         )}
       </div>
+
+      <RuntimeStatus key={runtimeStatusVersion} />
 
       <Card className="border-memBorder-primary">
         <CardHeader>

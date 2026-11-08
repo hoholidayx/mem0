@@ -29,8 +29,10 @@ from routers import entities as entities_router
 from routers import requests as requests_router
 from schemas import MessageResponse
 from server_state import (
+    MemoryNotReadyError,
     get_current_config,
     get_memory_instance,
+    get_runtime_status,
     initialize_state,
     set_session_factory,
     update_config,
@@ -57,7 +59,7 @@ SENSITIVE_CONFIG_KEYS = {
     "secret",
     "token",
 }
-SKIPPED_REQUEST_LOG_PATHS = {"/api/health", "/docs", "/redoc", "/openapi.json"}
+SKIPPED_REQUEST_LOG_PATHS = {"/api/health", "/api/ready", "/docs", "/redoc", "/openapi.json"}
 SKIPPED_REQUEST_LOG_PREFIXES = ("/requests",)
 
 BUNDLED_LLM_PROVIDERS = ("openai", "anthropic", "gemini")
@@ -340,6 +342,27 @@ async def log_requests(request: Request, call_next):
                 round((time.perf_counter() - start) * 1000, 2),
                 getattr(request.state, "auth_type", "none"),
             )
+
+
+@app.exception_handler(MemoryNotReadyError)
+async def memory_not_ready_handler(request: Request, exc: MemoryNotReadyError):
+    return JSONResponse(status_code=503, content={"detail": {"code": "memory_not_ready", "message": "Configure LLM and embedding providers in Setup before using memory operations."}})
+
+
+@app.get("/api/health", summary="Control-plane liveness")
+def health():
+    return {"status": "ok", "service": "mem0-control-plane"}
+
+
+@app.get("/api/ready", summary="Model runtime readiness")
+def ready():
+    status = get_runtime_status()
+    return JSONResponse(status_code=200 if status["ready"] else 503, content={"ready": status["ready"], "status": status["status"]})
+
+
+@app.get("/configure/status", summary="Provider runtime status")
+def configuration_status(_auth=Depends(verify_auth)):
+    return get_runtime_status()
 
 
 @app.get("/configure", summary="Get current Mem0 configuration")

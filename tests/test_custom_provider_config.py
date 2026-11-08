@@ -106,6 +106,35 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             provider_config.validate_vector_dimensions(candidate, base)
 
+    def test_control_plane_bootstrap_and_restart(self):
+        fake_mem0 = ModuleType("mem0")
+        fake_mem0.Memory = type("Memory", (), {"from_config": staticmethod(lambda _: object())})
+        spec = importlib.util.spec_from_file_location("isolated_bootstrap_state", SERVER / "server_state.py")
+        state = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"mem0": fake_mem0, "provider_config": provider_config}):
+            spec.loader.exec_module(state)
+        blank = {"llm": {"provider": "openai", "config": {}}, "embedder": {"provider": "openai", "config": {}}}
+        with patch.dict("os.environ", {}, clear=True):
+            state.initialize_state(blank)
+            self.assertEqual(state.get_runtime_status()["status"], "needs_configuration")
+            with self.assertRaises(state.MemoryNotReadyError):
+                state.get_memory_instance()
+            with patch.object(state, "_save_overrides") as save:
+                state.update_config(config())
+                saved = save.call_args.args[0]
+            self.assertTrue(state.get_runtime_status()["ready"])
+            with patch.object(state, "_load_overrides", return_value=saved):
+                state.initialize_state(blank)
+            self.assertTrue(state.get_runtime_status()["ready"])
+            self.assertEqual(state.get_current_config(), config())
+        with patch.object(fake_mem0.Memory, "from_config", side_effect=RuntimeError("secret diagnostic")):
+            state.initialize_state(config())
+        self.assertEqual(state.get_runtime_status()["status"], "initialization_failed")
+        self.assertNotIn("secret", str(state.get_runtime_status()))
+        with patch.object(state, "_load_overrides", side_effect=RuntimeError("database secret")):
+            state.initialize_state(config())
+        self.assertEqual(state.get_runtime_status()["error_code"], "config_load_failed")
+
     def test_failed_runtime_update_is_atomic(self):
         fake_mem0 = ModuleType("mem0")
         fake_mem0.Memory = type("Memory", (), {"from_config": staticmethod(lambda _: object())})
