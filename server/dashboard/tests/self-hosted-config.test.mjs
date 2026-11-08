@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildProviderConfig,
+  buildPgvectorConfig,
+  getPgvectorSettings,
   getEffectiveConfig,
 } from "../src/utils/self-hosted-config.ts";
 
@@ -152,4 +154,138 @@ test("effective config round trips independent endpoints and embedding dimension
   }
   assert.equal(getEffectiveConfig(null), null);
   assert.equal(buildProviderConfig({ provider: "", model: "chat" }), undefined);
+});
+
+test("storage fields load effective pgvector settings without copying credentials", () => {
+  assert.deepEqual(
+    getPgvectorSettings({
+      vector_store: {
+        provider: "pgvector",
+        config: {
+          collection_name: "existing",
+          embedding_model_dims: 768,
+          hnsw: false,
+          password: "synthetic-secret",
+        },
+      },
+    }),
+    { collectionName: "existing", dimensions: "768", hnsw: false },
+  );
+  assert.equal(
+    getPgvectorSettings({ vector_store: { provider: "qdrant" } }),
+    null,
+  );
+  assert.equal(buildPgvectorConfig(null, null), undefined);
+});
+
+const existingStorage = {
+  collectionName: "existing",
+  dimensions: "1536",
+  hnsw: true,
+};
+
+test("unchanged storage preserves collection and sends only editable settings", () => {
+  assert.deepEqual(
+    buildPgvectorConfig(existingStorage, existingStorage, "1536"),
+    {
+      provider: "pgvector",
+      config: {
+        collection_name: "existing",
+        embedding_model_dims: 1536,
+        hnsw: true,
+      },
+    },
+  );
+});
+
+test("storage dimension changes require a new name and API dimensions must agree", () => {
+  assert.throws(
+    () =>
+      buildPgvectorConfig(
+        { ...existingStorage, dimensions: "768" },
+        existingStorage,
+        "768",
+      ),
+    /new collection name/,
+  );
+  assert.throws(
+    () => buildPgvectorConfig(existingStorage, existingStorage, "768"),
+    /must match/,
+  );
+  const updated = {
+    ...existingStorage,
+    collectionName: "new-768",
+    dimensions: "768",
+  };
+  assert.equal(
+    buildPgvectorConfig(updated, existingStorage, "768").config.collection_name,
+    "new-768",
+  );
+  assert.equal(
+    buildPgvectorConfig(updated, existingStorage, "").config
+      .embedding_model_dims,
+    768,
+  );
+});
+
+test("2048 dimensions require HNSW disabled and a new collection", () => {
+  const settings = {
+    ...existingStorage,
+    collectionName: "new-2048",
+    dimensions: "2048",
+  };
+  assert.throws(
+    () => buildPgvectorConfig(settings, existingStorage, "2048"),
+    /HNSW/,
+  );
+  assert.deepEqual(
+    buildPgvectorConfig({ ...settings, hnsw: false }, existingStorage, "2048"),
+    {
+      provider: "pgvector",
+      config: {
+        collection_name: "new-2048",
+        embedding_model_dims: 2048,
+        hnsw: false,
+      },
+    },
+  );
+});
+
+test("storage rejects blank names and invalid dimensions", () => {
+  assert.throws(
+    () =>
+      buildPgvectorConfig(
+        { ...existingStorage, collectionName: " " },
+        existingStorage,
+      ),
+    /name is required/,
+  );
+  for (const dimensions of ["", "0", "-1", "1.5", "bad", "9007199254740992"]) {
+    assert.throws(
+      () =>
+        buildPgvectorConfig(
+          { ...existingStorage, dimensions },
+          existingStorage,
+        ),
+      /positive integer/,
+    );
+  }
+});
+
+test("exact search storage dimensions cannot exceed 16000", () => {
+  assert.throws(
+    () =>
+      buildPgvectorConfig(
+        { collectionName: "new", dimensions: "16001", hnsw: false },
+        existingStorage,
+      ),
+    /16,000/,
+  );
+  assert.equal(
+    buildPgvectorConfig(
+      { collectionName: "new", dimensions: "16000", hnsw: false },
+      existingStorage,
+    ).config.embedding_model_dims,
+    16000,
+  );
 });

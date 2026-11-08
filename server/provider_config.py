@@ -80,14 +80,20 @@ def validate_vector_dimensions(config, previous=None):
     dims = options.get("embedding_model_dims", 1536)
     if type(dims) is not int or dims < 1:
         raise ProviderConfigError("Vector dimensions must be a positive integer.")
-    if options.get("hnsw", True) and not options.get("diskann", False) and dims > 2000:
+    if options.get("hnsw", True) and dims > 2000:
         raise ProviderConfigError(
             "pgvector vector HNSW supports at most 2000 dimensions; 2048 requires a different index configuration."
         )
+    if dims > 16000:
+        raise ProviderConfigError("pgvector vector storage supports at most 16000 dimensions.")
+    collection = options.get("collection_name")
+    if collection is not None and (not isinstance(collection, str) or not collection.strip()):
+        raise ProviderConfigError("Vector collection name must be a non-empty string.")
     embed_dims = config.get("embedder", {}).get("config", {}).get("embedding_dims")
     if embed_dims is not None and embed_dims != dims:
         raise ProviderConfigError(
-            "Embedding dimensions must match vector_store.config.embedding_model_dims. Use a new collection when changing dimensions."
+            f"Embedding API dimensions ({embed_dims}) must match vector storage dimensions ({dims}). "
+            "Set Vector storage dimensions in the form as well, and choose a new collection when changing dimensions."
         )
     if previous:
         old = previous.get("vector_store", {}).get("config", {})

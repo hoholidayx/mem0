@@ -105,6 +105,16 @@ class ProviderTests(unittest.TestCase):
         candidate["vector_store"]["config"]["embedding_model_dims"] = 2048
         with self.assertRaises(ValueError):
             provider_config.validate_vector_dimensions(candidate, base)
+        candidate["vector_store"]["config"]["diskann"] = True
+        with self.assertRaises(ValueError):
+            provider_config.validate_vector_dimensions(candidate, base)
+        candidate["vector_store"]["config"]["diskann"] = False
+        candidate["vector_store"]["config"]["hnsw"] = False
+        candidate["embedder"] = {"config": {"embedding_dims": 2048}}
+        provider_config.validate_vector_dimensions(candidate, base)
+        candidate["vector_store"]["config"]["embedding_model_dims"] = 16001
+        with self.assertRaises(ValueError):
+            provider_config.validate_vector_dimensions(candidate, base)
 
     def test_control_plane_bootstrap_and_restart(self):
         fake_mem0 = ModuleType("mem0")

@@ -362,3 +362,17 @@ while uninitialized. An initialization or configuration-load error keeps the
 control plane reachable for repair but is never reported as ready. Existing valid
 configuration survives a failed update. Initialization does not prove remote
 credentials/model compatibility; use Quick Test deliberately after saving.
+
+### Embedding API dimensions versus vector storage dimensions
+
+The optional **Embedding API dimensions** field is a request parameter sent to
+the embedding provider; it does not resize PostgreSQL columns. **Vector storage
+dimensions** must match the actual model output. Setup and Configuration expose
+both values plus the collection name and HNSW setting. An explicit API dimension
+must match storage dimensions; leave the API parameter blank if unsupported.
+
+To change storage dimensions, select a new collection name. The original
+collection and its records are retained; no automatic migration or deletion
+is performed. For output above 2000 dimensions (e.g. 2048), disable ordinary
+vector HNSW to use exact search, which may be slower on large collections.
+This does not truncate embeddings or silently change the provider's model.

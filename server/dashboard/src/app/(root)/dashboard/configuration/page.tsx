@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PgvectorSettingsFields } from "@/components/self-hosted/pgvector-settings";
 import { RuntimeStatus } from "@/components/self-hosted/runtime-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,9 @@ import { api } from "@/utils/api";
 import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
 import {
   buildProviderConfig,
+  buildPgvectorConfig,
+  getPgvectorSettings,
+  type PgvectorSettings,
   getEffectiveConfig,
 } from "@/utils/self-hosted-config";
 import { useAuth } from "@/hooks/use-auth";
@@ -41,6 +45,11 @@ export default function ConfigurationPage() {
   const [embedderBaseUrl, setEmbedderBaseUrl] = useState("");
   const [embedderApiKey, setEmbedderApiKey] = useState("");
   const [embeddingDims, setEmbeddingDims] = useState("");
+  const [vectorSettings, setVectorSettings] = useState<PgvectorSettings | null>(
+    null,
+  );
+  const [initialVectorSettings, setInitialVectorSettings] =
+    useState<PgvectorSettings | null>(null);
   const [embedderProvider, setEmbedderProvider] = useState("");
   const [embedderModel, setEmbedderModel] = useState("");
 
@@ -64,6 +73,9 @@ export default function ConfigurationPage() {
 
   useEffect(() => {
     if (!config) return;
+    const storage = getPgvectorSettings(config);
+    setVectorSettings(storage);
+    setInitialVectorSettings(storage);
     setLlmBaseUrl(config.llm?.config?.openai_base_url || "");
     setEmbedderBaseUrl(config.embedder?.config?.openai_base_url || "");
     setEmbeddingDims(config.embedder?.config?.embedding_dims?.toString() || "");
@@ -107,7 +119,14 @@ export default function ConfigurationPage() {
         newConfig.embedder = embedder;
       }
 
+      const vectorStore = buildPgvectorConfig(
+        vectorSettings,
+        initialVectorSettings,
+        embeddingDims,
+      );
+      if (vectorStore) newConfig.vector_store = vectorStore;
       await api.post(MEMORY_ENDPOINTS.CONFIGURE, newConfig);
+      setInitialVectorSettings(vectorSettings);
       setLlmApiKey("");
       setEmbedderApiKey("");
       toast({ title: "Configuration saved", variant: "success" });
@@ -284,7 +303,7 @@ export default function ConfigurationPage() {
           )}
           <div className="space-y-1">
             <Label htmlFor="embedding-dims">
-              Embedding Dimensions (optional)
+              Embedding API Dimensions (optional)
             </Label>
             <Input
               id="embedding-dims"
@@ -299,12 +318,20 @@ export default function ConfigurationPage() {
             <p className="text-xs text-onSurface-default-tertiary">
               Must match the vector collection. Changing embedding model or
               dimensions may require a new or rebuilt collection. Blank uses the
-              provider default. The current pgvector HNSW index supports at most
-              2,000 dimensions.
+              provider default. Configure collection dimensions and indexing
+              separately below.
             </p>
           </div>
         </CardContent>
       </Card>
+
+      {vectorSettings && (
+        <PgvectorSettingsFields
+          value={vectorSettings}
+          onChange={setVectorSettings}
+          disabled={!isAdmin || isSaving || isPrefilling}
+        />
+      )}
 
       <p className="text-xs text-onSurface-default-tertiary">
         OpenAI-compatible providers need no additional package. For other

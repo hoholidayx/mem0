@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Copy } from "lucide-react";
 import { CopyToClipboard } from "react-copy-to-clipboard";
+import { PgvectorSettingsFields } from "@/components/self-hosted/pgvector-settings";
 import { RuntimeStatus } from "@/components/self-hosted/runtime-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +28,9 @@ import {
 } from "@/utils/api-endpoints";
 import {
   buildProviderConfig,
+  buildPgvectorConfig,
+  getPgvectorSettings,
+  type PgvectorSettings,
   getEffectiveConfig,
 } from "@/utils/self-hosted-config";
 import { isValidEmail } from "@/lib/validators";
@@ -84,6 +88,11 @@ export default function SetupPage() {
   const [embedderBaseUrl, setEmbedderBaseUrl] = useState("");
   const [embedderApiKey, setEmbedderApiKey] = useState("");
   const [embeddingDims, setEmbeddingDims] = useState("");
+  const [vectorSettings, setVectorSettings] = useState<PgvectorSettings | null>(
+    null,
+  );
+  const [initialVectorSettings, setInitialVectorSettings] =
+    useState<PgvectorSettings | null>(null);
   const [embedderProvider, setEmbedderProvider] = useState("");
   const [embedderModel, setEmbedderModel] = useState("");
   const [serverHasLlmKey, setServerHasLlmKey] = useState(false);
@@ -138,6 +147,9 @@ export default function SetupPage() {
         const llmUrl = config?.llm?.config?.openai_base_url || "";
         const embUrl = config?.embedder?.config?.openai_base_url || "";
         const dims = config?.embedder?.config?.embedding_dims?.toString() || "";
+        const storage = getPgvectorSettings(config);
+        setVectorSettings(storage);
+        setInitialVectorSettings(storage);
         setLlmBaseUrl(llmUrl);
         setEmbedderBaseUrl(embUrl);
         setEmbeddingDims(dims);
@@ -208,6 +220,8 @@ export default function SetupPage() {
     setError("");
 
     const dirty =
+      JSON.stringify(vectorSettings) !==
+        JSON.stringify(initialVectorSettings) ||
       !!llmApiKey ||
       !!embedderApiKey ||
       llmBaseUrl !== initialLlmBaseUrl ||
@@ -242,8 +256,15 @@ export default function SetupPage() {
       const payload: Record<string, unknown> = { version: "v1.1" };
       if (llm) payload.llm = llm;
       if (embedder) payload.embedder = embedder;
+      const vectorStore = buildPgvectorConfig(
+        vectorSettings,
+        initialVectorSettings,
+        embeddingDims,
+      );
+      if (vectorStore) payload.vector_store = vectorStore;
 
       await api.post(MEMORY_ENDPOINTS.CONFIGURE, payload);
+      setInitialVectorSettings(vectorSettings);
       if (llmApiKey) setServerHasLlmKey(true);
       setLlmApiKey("");
       setEmbedderApiKey("");
@@ -600,7 +621,7 @@ export default function SetupPage() {
                 )}
                 <div className="space-y-1">
                   <Label htmlFor="setup-embedding-dims">
-                    Embedding Dimensions (optional)
+                    Embedding API Dimensions (optional)
                   </Label>
                   <Input
                     id="setup-embedding-dims"
@@ -614,10 +635,18 @@ export default function SetupPage() {
                   <p className="text-xs text-onSurface-default-tertiary">
                     Must match the vector collection. Changing embedding model
                     or dimensions may require a new or rebuilt collection. Blank
-                    uses the provider default. The current pgvector HNSW index
-                    supports at most 2,000 dimensions.
+                    uses the provider default. Configure collection dimensions
+                    and indexing separately below.
                   </p>
                 </div>
+
+                {vectorSettings && (
+                  <PgvectorSettingsFields
+                    value={vectorSettings}
+                    onChange={setVectorSettings}
+                    disabled={isLoading || isPrefillingConfig}
+                  />
+                )}
 
                 <p className="text-xs text-onSurface-default-tertiary">
                   OpenAI-compatible providers need no additional package. For
