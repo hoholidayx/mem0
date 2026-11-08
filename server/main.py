@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from models import RequestLog, User
+from provider_config import ProviderConfigError, validate_base_url
 from pydantic import BaseModel, Field
 from rate_limit import limiter
 from routers import api_keys as api_keys_router
@@ -128,16 +129,38 @@ DEFAULT_CONFIG = {
             "user": POSTGRES_USER,
             "password": POSTGRES_PASSWORD,
             "collection_name": POSTGRES_COLLECTION_NAME,
+            "embedding_model_dims": int(os.environ.get("MEM0_VECTOR_DIMS", "1536")),
         },
     },
     "llm": {
         "provider": "openai",
-        "config": {"api_key": OPENAI_API_KEY, "temperature": 0.2, "model": DEFAULT_LLM_MODEL},
+        "config": {
+            "api_key": os.environ.get("MEM0_LLM_API_KEY") or OPENAI_API_KEY,
+            "openai_base_url": validate_base_url(
+                os.environ.get("MEM0_LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+            ),
+            "temperature": 0.2,
+            "model": DEFAULT_LLM_MODEL,
+        },
     },
-    "embedder": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "model": DEFAULT_EMBEDDER_MODEL}},
+    "embedder": {
+        "provider": "openai",
+        "config": {
+            "api_key": os.environ.get("MEM0_EMBEDDER_API_KEY") or OPENAI_API_KEY,
+            "openai_base_url": validate_base_url(
+                os.environ.get("MEM0_EMBEDDER_BASE_URL")
+                or os.environ.get("OPENAI_API_BASE")
+                or os.environ.get("OPENAI_BASE_URL")
+            ),
+            "model": DEFAULT_EMBEDDER_MODEL,
+        },
+    },
     "history_db_path": HISTORY_DB_PATH,
 }
 
+
+if os.environ.get("MEM0_EMBEDDER_DIMS"):
+    DEFAULT_CONFIG["embedder"]["config"]["embedding_dims"] = int(os.environ["MEM0_EMBEDDER_DIMS"])
 
 set_session_factory(SessionLocal)
 initialize_state(DEFAULT_CONFIG)
@@ -333,7 +356,20 @@ def list_bundled_providers(_auth=Depends(verify_auth)):
 def set_config(config: Dict[str, Any], _auth=Depends(require_admin)):
     """Set memory configuration. Requires admin role."""
     _validate_bundled_providers(config)
-    update_config(config)
+    try:
+        update_config(config)
+    except ProviderConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except ValueError:
+        # Never echo SDK exceptions: they can contain credentials or request URLs.
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid provider configuration. Check Base URLs, keys, models and dimensions; a changed provider or URL requires a new key.",
+        ) from None
+    except Exception:
+        raise HTTPException(
+            status_code=502, detail="Could not apply provider configuration. Check provider and database availability."
+        ) from None
     return {"message": "Configuration set successfully"}
 
 

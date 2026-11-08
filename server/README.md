@@ -305,3 +305,43 @@ Then `docker compose down -v`, `docker compose up -d --build`, and restore from
 ## Reference
 
 Additional product and API documentation lives at [docs.mem0.ai](https://docs.mem0.ai/open-source/overview).
+
+## Custom OpenAI-compatible providers
+
+In Setup or Configuration, select **OpenAI / OpenAI-compatible** separately for
+LLM and embeddings. Each has its own model ID, Base URL and API key. Supply the
+API root (usually ending in `/v1`), not `/chat/completions` or `/embeddings`.
+HTTP endpoints are allowed for trusted LAN services; HTTPS is recommended for
+remote providers. These are admin-controlled server destinations, not a public
+proxy API. Do not put credentials in URLs.
+
+Leaving a key blank retains it only for the same provider and URL. Changing a
+provider or URL requires entering a key explicitly so an old secret is not sent
+to another destination. Keys are redacted on read, never copied between LLM and
+embedding fields, and configuration errors do not echo provider exceptions.
+The upstream settings database stores provider credentials; protect that database
+and its backups (this change does not add encryption at rest).
+
+Startup also accepts independent `MEM0_LLM_BASE_URL` / `MEM0_LLM_API_KEY` and
+`MEM0_EMBEDDER_BASE_URL` / `MEM0_EMBEDDER_API_KEY`, with the existing shared
+OpenAI environment variables as fallback. Model defaults remain
+`MEM0_DEFAULT_LLM_MODEL` and `MEM0_DEFAULT_EMBEDDER_MODEL`. Saved Dashboard
+configuration wins over environment defaults. This does not restore model-free
+startup: valid initial provider settings are still needed to initialize the API.
+
+Compatible LLM endpoints must support OpenAI chat completions and the structured
+responses used by Mem0; embeddings endpoints must support `/embeddings`. A provider
+name alone does not guarantee all models support those features. Embedding model
+or dimension changes do not migrate stored vectors: rebuild/re-embed in a new
+collection before using existing memories with a different embedding model.
+Embedding dimensions, when set, are sent to the provider; omit them for APIs that
+do not accept that parameter and configure the vector store's dimensions to match.
+
+Offline configuration regression checks (no real credentials or provider calls):
+`python -m unittest discover -s tests -p test_custom_provider_config.py -v`.
+
+For startup vector sizing, `MEM0_VECTOR_DIMS` defaults to 1536; optionally set
+`MEM0_EMBEDDER_DIMS` only when the embedding API accepts a dimensions parameter.
+The current ordinary pgvector vector HNSW index supports at most 2000 dimensions,
+so 2048-dimensional output needs a different index configuration. The server
+rejects incompatible explicit dimensions before replacing the active runtime.

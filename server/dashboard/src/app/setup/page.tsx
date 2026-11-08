@@ -78,12 +78,19 @@ export default function SetupPage() {
   const [llmProvider, setLlmProvider] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [embedderBaseUrl, setEmbedderBaseUrl] = useState("");
+  const [embedderApiKey, setEmbedderApiKey] = useState("");
+  const [embeddingDims, setEmbeddingDims] = useState("");
   const [embedderProvider, setEmbedderProvider] = useState("");
   const [embedderModel, setEmbedderModel] = useState("");
   const [serverHasLlmKey, setServerHasLlmKey] = useState(false);
   const [providers, setProviders] = useState<BundledProviders | null>(null);
   const [initialLlmProvider, setInitialLlmProvider] = useState("");
   const [initialLlmModel, setInitialLlmModel] = useState("");
+  const [initialLlmBaseUrl, setInitialLlmBaseUrl] = useState("");
+  const [initialEmbedderBaseUrl, setInitialEmbedderBaseUrl] = useState("");
+  const [initialEmbeddingDims, setInitialEmbeddingDims] = useState("");
   const [initialEmbedderProvider, setInitialEmbedderProvider] = useState("");
   const [initialEmbedderModel, setInitialEmbedderModel] = useState("");
 
@@ -126,6 +133,15 @@ export default function SetupPage() {
         const embProv = config?.embedder?.provider || "";
         const embMod = config?.embedder?.config?.model || "";
 
+        const llmUrl = config?.llm?.config?.openai_base_url || "";
+        const embUrl = config?.embedder?.config?.openai_base_url || "";
+        const dims = config?.embedder?.config?.embedding_dims?.toString() || "";
+        setLlmBaseUrl(llmUrl);
+        setEmbedderBaseUrl(embUrl);
+        setEmbeddingDims(dims);
+        setInitialLlmBaseUrl(llmUrl);
+        setInitialEmbedderBaseUrl(embUrl);
+        setInitialEmbeddingDims(dims);
         setLlmProvider(llmProv);
         setLlmModel(llmMod);
         setEmbedderProvider(embProv);
@@ -191,6 +207,10 @@ export default function SetupPage() {
 
     const dirty =
       !!llmApiKey ||
+      !!embedderApiKey ||
+      llmBaseUrl !== initialLlmBaseUrl ||
+      embedderBaseUrl !== initialEmbedderBaseUrl ||
+      embeddingDims !== initialEmbeddingDims ||
       llmProvider !== initialLlmProvider ||
       llmModel !== initialLlmModel ||
       embedderProvider !== initialEmbedderProvider ||
@@ -207,12 +227,14 @@ export default function SetupPage() {
         provider: llmProvider,
         model: llmModel,
         apiKey: llmApiKey,
+        baseUrl: llmBaseUrl,
       });
       const embedder = buildProviderConfig({
         provider: embedderProvider,
         model: embedderModel,
-        apiKey:
-          llmApiKey && embedderProvider === llmProvider ? llmApiKey : undefined,
+        apiKey: embedderApiKey,
+        baseUrl: embedderBaseUrl,
+        embeddingDims,
       });
 
       const payload: Record<string, unknown> = { version: "v1.1" };
@@ -222,6 +244,10 @@ export default function SetupPage() {
       await api.post(MEMORY_ENDPOINTS.CONFIGURE, payload);
       if (llmApiKey) setServerHasLlmKey(true);
       setLlmApiKey("");
+      setEmbedderApiKey("");
+      setInitialLlmBaseUrl(llmBaseUrl);
+      setInitialEmbedderBaseUrl(embedderBaseUrl);
+      setInitialEmbeddingDims(embeddingDims);
       setInitialLlmProvider(llmProvider);
       setInitialLlmModel(llmModel);
       setInitialEmbedderProvider(embedderProvider);
@@ -356,7 +382,9 @@ export default function SetupPage() {
                   <Label htmlFor="setup-name">Name</Label>
                   <Input
                     id="setup-name"
-                    value={name}
+                    value={
+                      name === "openai" ? "OpenAI / OpenAI-compatible" : name
+                    }
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Your name"
                   />
@@ -422,6 +450,7 @@ export default function SetupPage() {
                       onValueChange={(value) => {
                         setLlmProvider(value);
                         setLlmApiKey("");
+                        setLlmBaseUrl("");
                       }}
                       disabled={!providers}
                     >
@@ -431,7 +460,9 @@ export default function SetupPage() {
                       <SelectContent>
                         {providers?.llm.map((name) => (
                           <SelectItem key={name} value={name}>
-                            {name}
+                            {name === "openai"
+                              ? "OpenAI / OpenAI-compatible"
+                              : name}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -454,6 +485,7 @@ export default function SetupPage() {
                   <Input
                     id="setup-llm-api-key"
                     type="password"
+                    autoComplete="new-password"
                     value={llmApiKey}
                     onChange={(e) => setLlmApiKey(e.target.value)}
                     placeholder={
@@ -464,9 +496,27 @@ export default function SetupPage() {
                     className="font-mono text-sm"
                   />
                   <p className="text-xs text-onSurface-default-tertiary">
-                    Also used for the embedder when it shares the same provider.
+                    Keys are independent. Leave blank to keep the saved key.
+                    Changing provider or base URL requires a new key.
                   </p>
                 </div>
+
+                {llmProvider === "openai" && (
+                  <div className="space-y-1">
+                    <Label htmlFor="setup-llm-base-url">LLM Base URL</Label>
+                    <Input
+                      id="setup-llm-base-url"
+                      type="url"
+                      value={llmBaseUrl}
+                      onChange={(e) => setLlmBaseUrl(e.target.value)}
+                      placeholder="https://api.openai.com/v1"
+                    />
+                    <p className="text-xs text-onSurface-default-tertiary">
+                      Use the provider&apos;s API root, including /v1 if
+                      required. Blank uses OpenAI.
+                    </p>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
@@ -475,7 +525,11 @@ export default function SetupPage() {
                     </Label>
                     <Select
                       value={embedderProvider}
-                      onValueChange={setEmbedderProvider}
+                      onValueChange={(value) => {
+                        setEmbedderProvider(value);
+                        setEmbedderApiKey("");
+                        setEmbedderBaseUrl("");
+                      }}
                       disabled={!providers}
                     >
                       <SelectTrigger id="setup-embedder-provider">
@@ -484,7 +538,9 @@ export default function SetupPage() {
                       <SelectContent>
                         {providers?.embedder.map((name) => (
                           <SelectItem key={name} value={name}>
-                            {name}
+                            {name === "openai"
+                              ? "OpenAI / OpenAI-compatible"
+                              : name}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -502,9 +558,66 @@ export default function SetupPage() {
                   </div>
                 </div>
 
+                <div className="space-y-1">
+                  <Label htmlFor="setup-embedder-api-key">
+                    Embedding API Key
+                  </Label>
+                  <Input
+                    id="setup-embedder-api-key"
+                    type="password"
+                    value={embedderApiKey}
+                    onChange={(e) => setEmbedderApiKey(e.target.value)}
+                    placeholder="Leave blank to keep existing key"
+                    autoComplete="new-password"
+                  />
+                  <p className="text-xs text-onSurface-default-tertiary">
+                    Separate from the LLM key. Changing provider or base URL
+                    requires a new key.
+                  </p>
+                </div>
+                {embedderProvider === "openai" && (
+                  <div className="space-y-1">
+                    <Label htmlFor="setup-embedder-base-url">
+                      Embedding Base URL
+                    </Label>
+                    <Input
+                      id="setup-embedder-base-url"
+                      type="url"
+                      value={embedderBaseUrl}
+                      onChange={(e) => setEmbedderBaseUrl(e.target.value)}
+                      placeholder="https://api.openai.com/v1"
+                    />
+                    <p className="text-xs text-onSurface-default-tertiary">
+                      Use the provider&apos;s API root, including /v1 if
+                      required. Blank uses OpenAI.
+                    </p>
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <Label htmlFor="setup-embedding-dims">
+                    Embedding Dimensions (optional)
+                  </Label>
+                  <Input
+                    id="setup-embedding-dims"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={embeddingDims}
+                    onChange={(e) => setEmbeddingDims(e.target.value)}
+                    placeholder="Provider default"
+                  />
+                  <p className="text-xs text-onSurface-default-tertiary">
+                    Must match the vector collection. Changing embedding model
+                    or dimensions may require a new or rebuilt collection. Blank
+                    uses the provider default. The current pgvector HNSW index
+                    supports at most 2,000 dimensions.
+                  </p>
+                </div>
+
                 <p className="text-xs text-onSurface-default-tertiary">
-                  Need another provider? Install its Python package and rebuild
-                  the image. See{" "}
+                  OpenAI-compatible providers need no additional package. For
+                  other providers, install their Python package and rebuild the
+                  image. See{" "}
                   <a
                     href={SUPPORTED_PROVIDERS_URL}
                     target="_blank"
@@ -520,6 +633,7 @@ export default function SetupPage() {
                   type="submit"
                   disabled={
                     isLoading ||
+                    isPrefillingConfig ||
                     !llmProvider ||
                     !embedderProvider ||
                     (!serverHasLlmKey && !llmApiKey)

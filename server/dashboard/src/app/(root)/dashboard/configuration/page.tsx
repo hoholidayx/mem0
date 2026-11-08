@@ -35,6 +35,10 @@ export default function ConfigurationPage() {
   const [llmProvider, setLlmProvider] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [embedderBaseUrl, setEmbedderBaseUrl] = useState("");
+  const [embedderApiKey, setEmbedderApiKey] = useState("");
+  const [embeddingDims, setEmbeddingDims] = useState("");
   const [embedderProvider, setEmbedderProvider] = useState("");
   const [embedderModel, setEmbedderModel] = useState("");
 
@@ -58,6 +62,9 @@ export default function ConfigurationPage() {
 
   useEffect(() => {
     if (!config) return;
+    setLlmBaseUrl(config.llm?.config?.openai_base_url || "");
+    setEmbedderBaseUrl(config.embedder?.config?.openai_base_url || "");
+    setEmbeddingDims(config.embedder?.config?.embedding_dims?.toString() || "");
     setLlmProvider((current) => current || config.llm?.provider || "");
     setLlmModel((current) => current || config.llm?.config?.model || "");
     setEmbedderProvider(
@@ -76,10 +83,14 @@ export default function ConfigurationPage() {
         provider: llmProvider,
         model: llmModel,
         apiKey: llmApiKey,
+        baseUrl: llmBaseUrl,
       });
       const embedder = buildProviderConfig({
         provider: embedderProvider,
         model: embedderModel,
+        apiKey: embedderApiKey,
+        baseUrl: embedderBaseUrl,
+        embeddingDims,
       });
 
       const newConfig: Record<string, unknown> = {
@@ -95,6 +106,8 @@ export default function ConfigurationPage() {
       }
 
       await api.post(MEMORY_ENDPOINTS.CONFIGURE, newConfig);
+      setLlmApiKey("");
+      setEmbedderApiKey("");
       toast({ title: "Configuration saved", variant: "success" });
     } catch (error) {
       toast({
@@ -131,6 +144,7 @@ export default function ConfigurationPage() {
                 onValueChange={(value) => {
                   setLlmProvider(value);
                   setLlmApiKey("");
+                  setLlmBaseUrl("");
                 }}
                 disabled={!isAdmin || !providers}
               >
@@ -140,7 +154,7 @@ export default function ConfigurationPage() {
                 <SelectContent>
                   {providers?.llm.map((name) => (
                     <SelectItem key={name} value={name}>
-                      {name}
+                      {name === "openai" ? "OpenAI / OpenAI-compatible" : name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -160,12 +174,34 @@ export default function ConfigurationPage() {
             <Label className="text-xs">API Key</Label>
             <Input
               type="password"
-              placeholder="sk-..."
+              placeholder="Leave blank to keep existing key"
+              autoComplete="new-password"
               value={llmApiKey}
               onChange={(e) => setLlmApiKey(e.target.value)}
               disabled={!isAdmin}
             />
           </div>
+          <p className="text-xs text-onSurface-default-tertiary">
+            Keys are independent. Leave blank to keep the saved key. Changing
+            provider or base URL requires a new key.
+          </p>
+          {llmProvider === "openai" && (
+            <div className="space-y-1">
+              <Label htmlFor="llm-base-url">LLM Base URL</Label>
+              <Input
+                id="llm-base-url"
+                type="url"
+                value={llmBaseUrl}
+                onChange={(e) => setLlmBaseUrl(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="https://api.openai.com/v1"
+              />
+              <p className="text-xs text-onSurface-default-tertiary">
+                Use the provider&apos;s API root, including /v1 if required.
+                Blank uses OpenAI.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -179,7 +215,11 @@ export default function ConfigurationPage() {
               <Label className="text-xs">Provider</Label>
               <Select
                 value={embedderProvider}
-                onValueChange={setEmbedderProvider}
+                onValueChange={(value) => {
+                  setEmbedderProvider(value);
+                  setEmbedderApiKey("");
+                  setEmbedderBaseUrl("");
+                }}
                 disabled={!isAdmin || !providers}
               >
                 <SelectTrigger>
@@ -188,7 +228,7 @@ export default function ConfigurationPage() {
                 <SelectContent>
                   {providers?.embedder.map((name) => (
                     <SelectItem key={name} value={name}>
-                      {name}
+                      {name === "openai" ? "OpenAI / OpenAI-compatible" : name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -204,12 +244,67 @@ export default function ConfigurationPage() {
               />
             </div>
           </div>
+          <div className="space-y-1">
+            <Label htmlFor="embedder-api-key">Embedding API Key</Label>
+            <Input
+              id="embedder-api-key"
+              type="password"
+              value={embedderApiKey}
+              onChange={(e) => setEmbedderApiKey(e.target.value)}
+              disabled={!isAdmin}
+              autoComplete="new-password"
+              placeholder="Leave blank to keep existing key"
+            />
+            <p className="text-xs text-onSurface-default-tertiary">
+              Separate from the LLM key. Changing provider or base URL requires
+              a new key.
+            </p>
+          </div>
+          {embedderProvider === "openai" && (
+            <div className="space-y-1">
+              <Label htmlFor="embedder-base-url">Embedding Base URL</Label>
+              <Input
+                id="embedder-base-url"
+                type="url"
+                value={embedderBaseUrl}
+                onChange={(e) => setEmbedderBaseUrl(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="https://api.openai.com/v1"
+              />
+              <p className="text-xs text-onSurface-default-tertiary">
+                Use the provider&apos;s API root, including /v1 if required.
+                Blank uses OpenAI.
+              </p>
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label htmlFor="embedding-dims">
+              Embedding Dimensions (optional)
+            </Label>
+            <Input
+              id="embedding-dims"
+              type="number"
+              min="1"
+              step="1"
+              value={embeddingDims}
+              onChange={(e) => setEmbeddingDims(e.target.value)}
+              disabled={!isAdmin}
+              placeholder="Provider default"
+            />
+            <p className="text-xs text-onSurface-default-tertiary">
+              Must match the vector collection. Changing embedding model or
+              dimensions may require a new or rebuilt collection. Blank uses the
+              provider default. The current pgvector HNSW index supports at most
+              2,000 dimensions.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
       <p className="text-xs text-onSurface-default-tertiary">
-        Need another provider? Install its Python package, rebuild the image,
-        and extend the bundled list. See the{" "}
+        OpenAI-compatible providers need no additional package. For other
+        providers, install their Python package, rebuild the image, and extend
+        the bundled list. See the{" "}
         <a
           href="https://docs.mem0.ai/open-source/setup#supported-providers"
           target="_blank"
@@ -222,7 +317,16 @@ export default function ConfigurationPage() {
       </p>
 
       {isAdmin && (
-        <Button onClick={handleSave} disabled={isSaving}>
+        <Button
+          onClick={handleSave}
+          disabled={
+            isSaving ||
+            isPrefilling ||
+            !config ||
+            !llmProvider ||
+            !embedderProvider
+          }
+        >
           {isSaving ? "Saving..." : "Save Configuration"}
         </Button>
       )}
