@@ -20,7 +20,7 @@ except ImportError:
 def mock_langchain_model():
     """Mock a Langchain model for testing."""
     mock_model = Mock(spec=BaseChatModel)
-    mock_model.invoke.return_value = Mock(content="This is a test response")
+    mock_model.invoke.return_value = Mock(content="This is a test response", response_metadata={}, invalid_tool_calls=[])
     return mock_model
 
 
@@ -93,7 +93,7 @@ def test_generate_response_with_tools(mock_langchain_model):
         }
     ]
 
-    mock_response = Mock()
+    mock_response = Mock(response_metadata={}, invalid_tool_calls=[])
     mock_response.content = "I've added the memory for you."
 
     mock_tool_call = Mock()

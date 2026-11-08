@@ -65,6 +65,10 @@ def prepare_provider_updates(current, updates):
             changed = changed or new_url != old_url
         if changed and not key:
             raise ProviderConfigError(f"Enter a new {section} API key when changing its provider or Base URL.")
+        if section == "llm" and "max_tokens" in config:
+            limit = config["max_tokens"]
+            if limit is not None and (type(limit) is not int or limit < 1):
+                raise ProviderConfigError("LLM max tokens must be a positive integer or blank for no client limit.")
         if section == "embedder" and "embedding_dims" in config:
             dims = config["embedding_dims"]
             if dims is not None and (type(dims) is not int or dims < 1):

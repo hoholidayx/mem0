@@ -10,6 +10,7 @@ from mem0.utils.factory import LlmFactory
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def mock_boto3():
     """Patch boto3 so no real AWS calls are made during unit tests."""
@@ -41,6 +42,7 @@ def _converse_response(text: str = "ok") -> dict:
 # ---------------------------------------------------------------------------
 # extract_provider
 # ---------------------------------------------------------------------------
+
 
 class TestExtractProvider:
     def test_standard_anthropic_model(self):
@@ -90,6 +92,7 @@ class TestExtractProvider:
 # ---------------------------------------------------------------------------
 # AWSBedrockConfig
 # ---------------------------------------------------------------------------
+
 
 class TestAWSBedrockConfig:
     def test_top_p_defaults_to_none(self):
@@ -144,6 +147,7 @@ class TestAWSBedrockConfig:
 # AWSBedrockLLM with application inference profile ARNs
 # ---------------------------------------------------------------------------
 
+
 class TestApplicationInferenceProfileArn:
     ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123xyz"
 
@@ -172,6 +176,7 @@ class TestApplicationInferenceProfileArn:
 # ---------------------------------------------------------------------------
 # LlmFactory
 # ---------------------------------------------------------------------------
+
 
 class TestLlmFactory:
     def test_aws_bedrock_uses_aws_bedrock_config(self):
@@ -204,6 +209,7 @@ class TestLlmFactory:
 # ---------------------------------------------------------------------------
 # _build_inference_config
 # ---------------------------------------------------------------------------
+
 
 class TestBuildInferenceConfig:
     """
@@ -261,18 +267,18 @@ class TestBuildInferenceConfig:
         cfg = llm._build_inference_config()
         assert cfg["maxTokens"] == 1024
 
-    def test_nova_fallback_max_tokens_when_absent(self, mock_boto3):
-        """Legacy Nova Converse used 5000 when max_tokens was missing from the dict."""
+    def test_nova_omits_max_tokens_when_absent(self, mock_boto3):
+        """No client-side cap is added when max_tokens is absent."""
         llm = _make_llm("amazon.nova-3-mini-20241119-v1:0", mock_boto3)
         llm.model_config.pop("max_tokens", None)
         cfg = llm._build_inference_config()
-        assert cfg["maxTokens"] == 5000
+        assert "maxTokens" not in cfg
 
-    def test_anthropic_fallback_max_tokens_when_absent(self, mock_boto3):
+    def test_anthropic_omits_max_tokens_when_absent(self, mock_boto3):
         llm = _make_llm("anthropic.claude-3-5-sonnet-20240620-v1:0", mock_boto3)
         llm.model_config.pop("max_tokens", None)
         cfg = llm._build_inference_config()
-        assert cfg["maxTokens"] == 2000
+        assert "maxTokens" not in cfg
 
     def test_minimax_omits_top_p_when_explicitly_set(self, mock_boto3):
         # MiniMax M2.x (reasoning model) rejects both temperature and topP simultaneously.
@@ -407,6 +413,7 @@ class TestGenerateResponseConverse:
 # MiniMax provider
 # ---------------------------------------------------------------------------
 
+
 class TestMiniMaxProvider:
     """Tests for MiniMax models via Bedrock Converse API."""
 
@@ -464,10 +471,12 @@ class TestMiniMaxProvider:
         mock_boto3.converse.return_value = _converse_response('{"facts": ["test"]}')
         llm = _make_llm("minimax.minimax-m2.5", mock_boto3)
 
-        llm.generate_response([
-            {"role": "system", "content": "Return JSON only."},
-            {"role": "user", "content": "Extract facts from: test"},
-        ])
+        llm.generate_response(
+            [
+                {"role": "system", "content": "Return JSON only."},
+                {"role": "user", "content": "Extract facts from: test"},
+            ]
+        )
 
         _, kwargs = mock_boto3.converse.call_args
         # system prompt must be in top-level "system" key
@@ -484,25 +493,27 @@ class TestMiniMaxProvider:
 # _parse_response — legacy InvokeModel provider-specific parsing
 # ---------------------------------------------------------------------------
 
+
 class TestParseResponseLegacy:
-    def test_ai21_missing_completions_returns_empty(self, mock_boto3):
-        """When AI21 response lacks 'completions', the fallback default must
-        be a valid dict (not a set literal), returning empty string."""
+    def test_ai21_missing_completions_raises(self, mock_boto3):
+        """An empty provider response must not be treated as successful text."""
         llm = _make_llm("ai21.j2-mid-v1", mock_boto3)
         import io
         import json
+
         body = io.BytesIO(json.dumps({"not_completions": True}).encode())
         response = {"body": body}
-        result = llm._parse_response(response, tools=None)
-        assert result == ""
+        from mem0.exceptions import LLMResponseError
+
+        with pytest.raises(LLMResponseError):
+            llm._parse_response(response, tools=None)
 
     def test_ai21_normal_response(self, mock_boto3):
         llm = _make_llm("ai21.j2-mid-v1", mock_boto3)
         import io
         import json
-        body = io.BytesIO(json.dumps({
-            "completions": [{"data": {"text": "hello from ai21"}}]
-        }).encode())
+
+        body = io.BytesIO(json.dumps({"completions": [{"data": {"text": "hello from ai21"}}]}).encode())
         response = {"body": body}
         result = llm._parse_response(response, tools=None)
         assert result == "hello from ai21"
@@ -530,11 +541,14 @@ class TestAnthropicConverseContentParsing:
 
         assert llm.generate_response(MESSAGES) == "final answer"
 
-    def test_empty_content_returns_empty_string(self, mock_boto3):
+    def test_empty_content_raises(self, mock_boto3):
         mock_boto3.converse.return_value = {"output": {"message": {"content": []}}}
         llm = _make_llm("anthropic.claude-3-5-sonnet-20240620-v1:0", mock_boto3)
 
-        assert llm.generate_response(MESSAGES) == ""
+        from mem0.exceptions import LLMResponseError
+
+        with pytest.raises(LLMResponseError):
+            llm.generate_response(MESSAGES)
 
     def test_plain_text_content_still_returned(self, mock_boto3):
         mock_boto3.converse.return_value = _converse_response("plain answer")
@@ -554,3 +568,125 @@ class TestAnthropicConverseContentParsing:
         llm = _make_llm("anthropic.claude-3-5-sonnet-20240620-v1:0", mock_boto3)
 
         assert llm.generate_response(MESSAGES) == "object answer"
+
+
+@pytest.mark.parametrize("model", ["anthropic.claude-v1", "amazon.nova-v1", "minimax.minimax-m2.5"])
+def test_unset_converse_token_limit_omitted(mock_boto3, model):
+    llm = _make_llm(model, mock_boto3, max_tokens=None)
+    assert "maxTokens" not in llm._build_inference_config()
+
+
+@pytest.mark.parametrize("model", ["meta.llama3", "mistral.small", "amazon.titan-text", "cohere.command", "ai21.j2"])
+def test_unset_invoke_token_limit_omitted(mock_boto3, model):
+    llm = _make_llm(model, mock_boto3, max_tokens=None)
+    body = llm._prepare_input("hello")
+    config = body.get("textGenerationConfig", body)
+    assert not {"max_tokens", "max_gen_len", "maxTokens", "maxTokenCount"} & config.keys()
+
+
+def test_converse_truncation_raises(mock_boto3):
+    from mem0.exceptions import LLMResponseError
+
+    mock_boto3.converse.return_value = dict(_converse_response("partial"), stopReason="max_tokens")
+    llm = _make_llm("anthropic.claude-v1", mock_boto3)
+    with pytest.raises(LLMResponseError) as error:
+        llm.generate_response(MESSAGES)
+    assert error.value.error_code == "llm_response_truncated"
+
+
+def test_invalid_invoke_json_raises(mock_boto3):
+    import io
+
+    from mem0.exceptions import LLMResponseError
+
+    mock_boto3.invoke_model.return_value = {"body": io.BytesIO(b"not json")}
+    llm = _make_llm("meta.llama3", mock_boto3)
+    with pytest.raises(LLMResponseError) as error:
+        llm.generate_response(MESSAGES)
+    assert error.value.error_code == "llm_invalid_response"
+
+
+@pytest.mark.parametrize(
+    "model,key",
+    [
+        ("meta.llama3", "max_gen_len"),
+        ("mistral.small", "max_tokens"),
+        ("ai21.j2", "maxTokens"),
+        ("cohere.command", "max_tokens"),
+    ],
+)
+def test_explicit_invoke_limit_preserved(mock_boto3, model, key):
+    body = _make_llm(model, mock_boto3, max_tokens=321)._prepare_input("hello")
+    assert body[key] == 321
+    if key != "max_tokens":
+        assert "max_tokens" not in body
+
+
+def test_anthropic_invoke_requires_explicit_limit(mock_boto3):
+    llm = _make_llm("anthropic.claude-v1", mock_boto3, max_tokens=None)
+    with pytest.raises(ValueError, match="requires an explicit max_tokens"):
+        llm._prepare_input("hello")
+    assert _make_llm("anthropic.claude-v1", mock_boto3, max_tokens=321)._prepare_input("hi")["max_tokens"] == 321
+
+
+@pytest.mark.parametrize(
+    "model,payload",
+    [
+        ("meta.llama3", {"generation": "partial", "stop_reason": "length"}),
+        ("mistral.small", {"outputs": [{"text": "partial", "stop_reason": "length"}]}),
+        ("cohere.command", {"generations": [{"text": "partial", "finish_reason": "MAX_TOKENS"}]}),
+        ("amazon.titan-text", {"results": [{"outputText": "partial", "completionReason": "LENGTH"}]}),
+        ("ai21.j2", {"completions": [{"data": {"text": "partial"}, "finishReason": {"reason": "length"}}]}),
+    ],
+)
+def test_invoke_truncation_raises(mock_boto3, model, payload):
+    import io
+    import json
+
+    from mem0.exceptions import LLMResponseError
+
+    mock_boto3.invoke_model.return_value = {"body": io.BytesIO(json.dumps(payload).encode())}
+    with pytest.raises(LLMResponseError) as error:
+        _make_llm(model, mock_boto3).generate_response(MESSAGES)
+    assert error.value.error_code == "llm_response_truncated"
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_empty_converse_raises(mock_boto3, text):
+    from mem0.exceptions import LLMResponseError
+
+    mock_boto3.converse.return_value = _converse_response(text)
+    with pytest.raises(LLMResponseError) as error:
+        _make_llm("amazon.nova-v1", mock_boto3).generate_response(MESSAGES)
+    assert error.value.error_code == "llm_empty_response"
+
+
+def test_tool_only_response_is_valid(mock_boto3):
+    mock_boto3.converse.return_value = {
+        "output": {"message": {"content": [{"toolUse": {"name": "add_memory", "input": {"data": "hello"}}}]}}
+    }
+    result = _make_llm("anthropic.claude-v1", mock_boto3).generate_response(MESSAGES, tools=TOOLS)
+    assert result["tool_calls"] == [{"name": "add_memory", "arguments": {"data": "hello"}}]
+
+
+def test_truncated_tool_response_raises(mock_boto3):
+    from mem0.exceptions import LLMResponseError
+
+    mock_boto3.converse.return_value = {
+        "stopReason": "max_tokens",
+        "output": {"message": {"content": [{"toolUse": {"name": "add_memory", "input": {"data": "partial"}}}]}},
+    }
+    with pytest.raises(LLMResponseError) as error:
+        _make_llm("anthropic.claude-v1", mock_boto3).generate_response(MESSAGES, tools=TOOLS)
+    assert error.value.error_code == "llm_response_truncated"
+
+
+def test_malformed_tool_arguments_raise(mock_boto3):
+    from mem0.exceptions import LLMResponseError
+
+    mock_boto3.converse.return_value = {
+        "output": {"message": {"content": [{"toolUse": {"name": "add_memory", "input": '{"data":'}}]}}
+    }
+    with pytest.raises(LLMResponseError) as error:
+        _make_llm("anthropic.claude-v1", mock_boto3).generate_response(MESSAGES, tools=TOOLS)
+    assert error.value.error_code == "llm_invalid_response"

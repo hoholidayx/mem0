@@ -1,4 +1,3 @@
-import json
 import os
 from typing import Dict, List, Optional, Union
 
@@ -7,7 +6,6 @@ from openai import OpenAI
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.xai import XAIConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 
 class XAILLM(LLMBase):
@@ -51,6 +49,7 @@ class XAILLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        self._validate_chat_response(response, tools)
         if tools:
             processed_response = {
                 "content": response.choices[0].message.content,
@@ -62,7 +61,7 @@ class XAILLM(LLMBase):
                     processed_response["tool_calls"].append(
                         {
                             "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
+                            "arguments": self._parse_tool_arguments(tool_call.function.arguments),
                         }
                     )
 
@@ -92,6 +91,8 @@ class XAILLM(LLMBase):
             str or dict: The generated response. A string when tools are not requested;
             a dict ``{"content": ..., "tool_calls": [...]}`` when tools are requested.
         """
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         params = self._get_supported_params(messages=messages, **kwargs)
         params.update(
             {

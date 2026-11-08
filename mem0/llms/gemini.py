@@ -55,6 +55,7 @@ class GeminiLLM(LLMBase):
         """
         # Get parts safely — content can be None when Gemini blocks the response
         candidate = response.candidates[0] if response.candidates else None
+        self._check_finish_reason(getattr(candidate, "finish_reason", None))
         parts = candidate.content.parts if candidate and candidate.content else None
 
         if tools:
@@ -81,13 +82,15 @@ class GeminiLLM(LLMBase):
                             }
                         )
 
+            self._validate_response_content(processed_response["content"], processed_response["tool_calls"])
             return processed_response
         else:
             if parts:
                 for part in parts:
                     if hasattr(part, "text") and part.text:
+                        self._validate_response_content(part.text)
                         return part.text
-            return ""
+            self._validate_response_content(None)
 
     def _reformat_messages(self, messages: List[Dict[str, str]]):
         """

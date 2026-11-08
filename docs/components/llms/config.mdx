@@ -96,7 +96,7 @@ Here's a comprehensive list of all parameters that can be used across different 
     | `model`              | Embedding model to use                        | All               |
     | `temperature`        | Temperature of the model                      | All               |
     | `api_key`            | API key to use                                | All               |
-    | `max_tokens`         | Tokens to generate                            | All               |
+    | `max_tokens`         | Optional positive output-token limit; omitted by default | All               |
     | `top_p`              | Probability threshold for nucleus sampling    | All               |
     | `top_k`              | Number of highest probability tokens to keep  | All               |
     | `http_client_proxies`| Allow proxy server settings                   | All               |
@@ -125,7 +125,7 @@ Here's a comprehensive list of all parameters that can be used across different 
     | `model`              | Embedding model to use                        | All               |
     | `temperature`        | Temperature of the model                      | All               |
     | `apiKey`             | API key to use                                | All               |
-    | `maxTokens`          | Tokens to generate                            | All               |
+    | `maxTokens`          | Optional positive output-token limit; omitted by default | All               |
     | `topP`               | Probability threshold for nucleus sampling    | All               |
     | `topK`               | Number of highest probability tokens to keep  | All               |
     | `openaiBaseUrl`      | Base URL for OpenAI API                       | OpenAI            |
@@ -135,3 +135,21 @@ Here's a comprehensive list of all parameters that can be used across different 
 ## Supported LLMs
 
 For detailed information on configuring specific LLMs, please visit the [LLMs](./overview) section. There you'll find information for each supported LLM with provider-specific usage examples and configuration details.
+
+## Python output limits and extraction errors
+
+The Python SDK defaults `max_tokens` to `None`. Compatible requests omit the
+output-limit parameter; this does not remove a model or provider's own limits.
+Existing explicit positive integer settings are preserved. The self-hosted
+Dashboard exposes an optional **LLM Max Tokens** field; clear it to omit the cap.
+Reasoning models use `max_completion_tokens` where required. Anthropic Messages
+and Bedrock Anthropic InvokeModel require an explicit limit, so configure one
+for those APIs. A supplied LangChain model can retain its own settings.
+
+Truncated responses, empty output, and malformed extraction JSON raise
+`LLMResponseError` instead of being treated as successful empty memories, in
+both synchronous and asynchronous extraction. A valid `{"memory": []}` remains
+a successful no-memory result. The self-hosted API exposes safe HTTP 502 error
+codes and a request ID, and the Dashboard displays these through its existing
+error notifications. Raw model responses and credentials are not included.
+Streaming is not supported by the synchronous extraction adapter contract.

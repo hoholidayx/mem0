@@ -64,6 +64,14 @@ class ProviderTests(unittest.TestCase):
         out = prepare(config(), {"embedder": {"config": {"openai_base_url": "", "api_key": "official-test"}}})
         self.assertEqual(out["embedder"]["config"]["openai_base_url"], provider_config.OPENAI_URL)
 
+    def test_optional_max_tokens(self):
+        for value in (None, 1, 8192):
+            out = prepare(config(), {"llm": {"config": {"max_tokens": value}}})
+            self.assertEqual(out["llm"]["config"]["max_tokens"], value)
+        for value in (0, -1, True, "2000", 1.5):
+            with self.assertRaises(ValueError):
+                prepare(config(), {"llm": {"config": {"max_tokens": value}}})
+
     def test_dimensions(self):
         for dims in (0, -1, True, "1024"):
             with self.assertRaises(ValueError):

@@ -7,6 +7,7 @@ import pytest
 
 from mem0 import Memory
 from mem0.configs.base import MemoryConfig
+from mem0.exceptions import LLMError
 from mem0.memory.main import _entity_collection_name
 from mem0.memory.utils import normalize_facts
 
@@ -470,13 +471,14 @@ def test_add_infer_with_malformed_llm_facts(mock_sqlite, mock_llm_factory, mock_
     config = MemoryConfig()
     memory = MemoryClass(config)
 
-    # This should NOT raise AttributeError
-    memory._add_to_vector_store(
-        messages=[{"role": "user", "content": "I like Python and I'm a developer"}],
-        metadata={"user_id": "test_user"},
-        filters={"user_id": "test_user"},
-        infer=True,
-    )
+    # Reject the old/wrong response schema with a safe error, not AttributeError.
+    with pytest.raises(LLMError, match="invalid memory extraction schema"):
+        memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "I like Python and I'm a developer"}],
+            metadata={"user_id": "test_user"},
+            filters={"user_id": "test_user"},
+            infer=True,
+        )
 
 
 def test_normalize_facts_plain_strings():
@@ -1631,7 +1633,7 @@ async def test_async_procedural_memory_empty_content_raises(mock_llm_factory, mo
     mock_response.content = None
     mock_langchain_llm.invoke.return_value = mock_response
 
-    with pytest.raises(ValueError, match="no content for the procedural memory summary"):
+    with pytest.raises(LLMError, match="no content for the procedural memory summary"):
         await memory._create_procedural_memory(
             [{"role": "user", "content": "how do we deploy"}],
             metadata={"user_id": "test_user"},
@@ -1658,7 +1660,7 @@ def test_sync_procedural_memory_empty_content_raises(
     memory = Memory(MemoryConfig())
     memory.llm.generate_response = Mock(return_value=None)
 
-    with pytest.raises(ValueError, match="no content for the procedural memory summary"):
+    with pytest.raises(LLMError, match="no content for the procedural memory summary"):
         memory._create_procedural_memory(
             [{"role": "user", "content": "how do we deploy"}],
             metadata={"user_id": "test_user"},

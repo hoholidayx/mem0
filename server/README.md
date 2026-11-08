@@ -376,3 +376,24 @@ collection and its records are retained; no automatic migration or deletion
 is performed. For output above 2000 dimensions (e.g. 2048), disable ordinary
 vector HNSW to use exact search, which may be slower on large collections.
 This does not truncate embeddings or silently change the provider's model.
+
+## Optional output limits and extraction failures
+
+LLM **Max Tokens** is optional in Setup and Configuration. Blank stores `null`
+and removes the client-side output cap; the provider/model still has its own
+limits. Existing explicitly saved numeric limits are retained until cleared.
+Reasoning models use the provider-supported output-limit parameter when a limit
+is explicitly set. Native Anthropic Messages requires an explicit limit; its
+adapter reports this requirement instead of silently inserting a default cap.
+
+Truncated, empty, invalid JSON, or malformed extraction responses are errors,
+not successful empty memories. A well-formed `{"memory": []}` still means that
+no facts were extracted. Sync and async extraction reject malformed responses
+before memory/message writes. The existing API error path returns HTTP502 with
+a safe error code and request ID; the Web UI shows that error through its usual
+notification/inline error path. Provider response bodies, credentials and
+prompts are not included in those error messages or server error logs.
+
+The SDK's memory-extraction interface expects a complete response; passing
+`stream=true` is rejected rather than misreading a stream as an empty response.
+Use a complete non-streaming response for memory extraction.

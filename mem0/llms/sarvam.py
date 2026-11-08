@@ -42,6 +42,8 @@ class SarvamLLM(LLMBase):
         Returns:
             str: The generated response.
         """
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         url = f"{self.base_url}/chat/completions"
 
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
@@ -84,7 +86,11 @@ class SarvamLLM(LLMBase):
             result = response.json()
 
             if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
+                choice = result["choices"][0]
+                self._check_finish_reason(choice.get("finish_reason"))
+                content = choice["message"]["content"]
+                self._validate_response_content(content)
+                return content
             else:
                 raise ValueError("No response choices found in Sarvam API response")
 

@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAuth } from "@/hooks/use-auth";
+import { assertMemoryTestResult } from "@/utils/memory-test";
 import { getErrorMessage } from "@/lib/error-message";
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
@@ -84,6 +85,7 @@ export default function SetupPage() {
   const [llmProvider, setLlmProvider] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmMaxTokens, setLlmMaxTokens] = useState("");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [embedderBaseUrl, setEmbedderBaseUrl] = useState("");
   const [embedderApiKey, setEmbedderApiKey] = useState("");
@@ -99,6 +101,7 @@ export default function SetupPage() {
   const [providers, setProviders] = useState<BundledProviders | null>(null);
   const [initialLlmProvider, setInitialLlmProvider] = useState("");
   const [initialLlmModel, setInitialLlmModel] = useState("");
+  const [initialLlmMaxTokens, setInitialLlmMaxTokens] = useState("");
   const [initialLlmBaseUrl, setInitialLlmBaseUrl] = useState("");
   const [initialEmbedderBaseUrl, setInitialEmbedderBaseUrl] = useState("");
   const [initialEmbeddingDims, setInitialEmbeddingDims] = useState("");
@@ -158,6 +161,9 @@ export default function SetupPage() {
         setInitialEmbeddingDims(dims);
         setLlmProvider(llmProv);
         setLlmModel(llmMod);
+        const maxTokens = config?.llm?.config?.max_tokens?.toString() || "";
+        setLlmMaxTokens(maxTokens);
+        setInitialLlmMaxTokens(maxTokens);
         setEmbedderProvider(embProv);
         setEmbedderModel(embMod);
         setInitialLlmProvider(llmProv);
@@ -222,6 +228,7 @@ export default function SetupPage() {
     const dirty =
       JSON.stringify(vectorSettings) !==
         JSON.stringify(initialVectorSettings) ||
+      llmMaxTokens !== initialLlmMaxTokens ||
       !!llmApiKey ||
       !!embedderApiKey ||
       llmBaseUrl !== initialLlmBaseUrl ||
@@ -243,6 +250,7 @@ export default function SetupPage() {
         provider: llmProvider,
         model: llmModel,
         apiKey: llmApiKey,
+        maxTokens: llmMaxTokens,
         baseUrl: llmBaseUrl,
       });
       const embedder = buildProviderConfig({
@@ -273,6 +281,7 @@ export default function SetupPage() {
       setInitialEmbeddingDims(embeddingDims);
       setInitialLlmProvider(llmProvider);
       setInitialLlmModel(llmModel);
+      setInitialLlmMaxTokens(llmMaxTokens);
       setInitialEmbedderProvider(embedderProvider);
       setInitialEmbedderModel(embedderModel);
       setStep(2);
@@ -320,6 +329,7 @@ export default function SetupPage() {
     e.preventDefault();
     setError("");
     setIsLoading(true);
+    setTestSuccess(false);
 
     try {
       const res = await fetch(`${apiUrl}/memories`, {
@@ -342,6 +352,7 @@ export default function SetupPage() {
         );
       }
 
+      assertMemoryTestResult(await res.json());
       setTestSuccess(true);
       void api
         .post(AUTH_ENDPOINTS.ONBOARDING_COMPLETE, { use_case: useCase })
@@ -524,6 +535,27 @@ export default function SetupPage() {
                   <p className="text-xs text-onSurface-default-tertiary">
                     Keys are independent. Leave blank to keep the saved key.
                     Changing provider or base URL requires a new key.
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="llm-max-tokens">
+                    LLM Max Tokens (optional)
+                  </Label>
+                  <Input
+                    id="llm-max-tokens"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={llmMaxTokens}
+                    onChange={(event) => setLlmMaxTokens(event.target.value)}
+                    disabled={isLoading || isPrefillingConfig}
+                    placeholder="No client limit"
+                  />
+                  <p className="text-xs text-onSurface-default-tertiary">
+                    Leave blank to omit the max_tokens parameter and clear any
+                    saved cap. The provider&apos;s own model and output limits
+                    still apply.
                   </p>
                 </div>
 
@@ -894,7 +926,8 @@ export default function SetupPage() {
                 ) : (
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 text-sm text-onSurface-positive-primary">
-                      <Check className="size-4" /> Memory created successfully
+                      <Check className="size-4" /> Memory created or updated
+                      successfully
                     </div>
                     <Button type="submit" className="w-full">
                       Go to Dashboard

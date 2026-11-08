@@ -18,7 +18,7 @@ class BaseLlmConfig(ABC):
         model: Optional[Union[str, Dict]] = None,
         temperature: float = 0.1,
         api_key: Optional[str] = None,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
         top_p: float = 0.1,
         top_k: int = 1,
         enable_vision: bool = False,
@@ -39,7 +39,7 @@ class BaseLlmConfig(ABC):
             api_key: API key for the LLM provider. If None, will try to get from environment variables.
                 Defaults to None
             max_tokens: Maximum number of tokens to generate in the response.
-                Range: 1 to 4096 (varies by model). Defaults to 2000
+                Positive integer when set. None omits the client limit; provider limits still apply.
             top_p: Nucleus sampling parameter. Controls diversity via nucleus sampling.
                 Higher values (closer to 1) make word selection more diverse.
                 Range: 0.0 to 1.0. Defaults to 0.1
@@ -58,7 +58,7 @@ class BaseLlmConfig(ABC):
             is_reasoning_model: Explicit override for reasoning-model detection.
                 When None (default), the model is classified automatically from its
                 name (preserving existing behavior). Set to True to force the
-                reasoning-model parameter set (drop max_tokens and temperature),
+                reasoning-model parameter set (use max_completion_tokens and omit temperature),
                 or False to force the standard parameter set. Useful for
                 deployments with custom/versioned model names (e.g. Azure
                 "gpt-5.4-nano-2026-03-17") that the name-based heuristic cannot
@@ -67,6 +67,8 @@ class BaseLlmConfig(ABC):
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
+        if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0):
+            raise ValueError("max_tokens must be a positive integer or None")
         self.max_tokens = max_tokens
         self.top_p = top_p
         self.top_k = top_k

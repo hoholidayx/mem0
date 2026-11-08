@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 from typing import Dict, List, Optional
 
@@ -8,7 +7,6 @@ from openai import AzureOpenAI
 
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 SCOPE = "https://cognitiveservices.azure.com/.default"
 
@@ -85,10 +83,13 @@ class AzureOpenAIStructuredLLM(LLMBase):
             params["temperature"] = self.config.temperature
             params["top_p"] = self.config.top_p
         # Reasoning models require max_completion_tokens rather than max_tokens.
-        if is_reasoning or self._uses_max_completion_tokens(self.config.model):
-            params["max_completion_tokens"] = self.config.max_tokens
-        else:
-            params["max_tokens"] = self.config.max_tokens
+        if self.config.max_tokens is not None:
+            key = (
+                "max_completion_tokens"
+                if is_reasoning or self._uses_max_completion_tokens(self.config.model)
+                else "max_tokens"
+            )
+            params[key] = self.config.max_tokens
         if is_reasoning:
             reasoning_effort = getattr(self.config, "reasoning_effort", None)
             if reasoning_effort:
@@ -133,6 +134,7 @@ class AzureOpenAIStructuredLLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        self._validate_chat_response(response, tools)
         if tools:
             processed_response = {
                 "content": response.choices[0].message.content,
@@ -144,7 +146,7 @@ class AzureOpenAIStructuredLLM(LLMBase):
                     processed_response["tool_calls"].append(
                         {
                             "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
+                            "arguments": self._parse_tool_arguments(tool_call.function.arguments),
                         }
                     )
 

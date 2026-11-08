@@ -1,4 +1,3 @@
-import json
 import os
 from typing import Dict, List, Optional, Union
 
@@ -7,7 +6,6 @@ from openai import OpenAI
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.deepseek import DeepSeekConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 
 class DeepSeekLLM(LLMBase):
@@ -51,6 +49,7 @@ class DeepSeekLLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        self._validate_chat_response(response, tools)
         if tools:
             processed_response = {
                 "content": response.choices[0].message.content,
@@ -62,7 +61,7 @@ class DeepSeekLLM(LLMBase):
                     processed_response["tool_calls"].append(
                         {
                             "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
+                            "arguments": self._parse_tool_arguments(tool_call.function.arguments),
                         }
                     )
 
@@ -91,6 +90,8 @@ class DeepSeekLLM(LLMBase):
         Returns:
             str: The generated response.
         """
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         params = self._get_supported_params(messages=messages, **kwargs)
         params.update(
             {

@@ -38,7 +38,7 @@ def test_reasoning_model_drops_temperature(mock_openai_client):
 
 def test_regular_model_sends_sampling_params(mock_openai_client):
     """Regular models still receive the standard sampling params."""
-    config = OpenAIConfig(model="gpt-4o", temperature=0.3)
+    config = OpenAIConfig(model="gpt-4o", temperature=0.3, max_tokens=123)
     llm = OpenAIStructuredLLM(config)
     _mock_parse(mock_openai_client)
 

@@ -30,6 +30,30 @@ def _classify_one(exc: BaseException) -> tuple[str, str]:
     module = getattr(type(exc), "__module__", "") or ""
     status = getattr(exc, "status_code", None)
 
+    response_errors = {
+        "LLM_RESPONSE_TRUNCATED": (
+            "llm_response_truncated",
+            "The model response was truncated. Increase or clear the LLM output-token limit, or use a model with a larger output limit.",
+        ),
+        "LLM_EMPTY_RESPONSE": (
+            "llm_empty_response",
+            "The model returned an empty response. Retry or check the provider and model configuration.",
+        ),
+        "LLM_INVALID_JSON": (
+            "llm_invalid_json",
+            "The model returned invalid JSON. Check that the model supports structured output, then retry.",
+        ),
+        "LLM_INVALID_RESPONSE": (
+            "llm_invalid_response",
+            "The model returned an invalid memory response. Check structured-output support and retry.",
+        ),
+    }
+    code = getattr(exc, "error_code", None)
+    if isinstance(code, str):
+        code = code.upper()
+    if isinstance(code, str) and code in response_errors:
+        return response_errors[code]
+
     if name in _AUTH_NAMES or status in (401, 403):
         return (
             "provider_auth_failed",
@@ -82,7 +106,9 @@ def upstream_error() -> HTTPException:
         )
     code, message = _classify(exc)
     rid = request_id_var.get()
-    logging.exception("Upstream provider error (code=%s)", code)
+    # Provider exceptions can include prompts, response bodies, URLs and credentials.
+    # Keep only allowlisted classification and correlation ID in server logs.
+    logging.error("Upstream provider error (code=%s, request_id=%s)", code, rid)
     return UpstreamError(code=code, detail=message, request_id=rid)
 
 

@@ -5,6 +5,7 @@ type ProviderConfig = {
     api_key?: string;
     openai_base_url?: string;
     embedding_dims?: number | null;
+    max_tokens?: number | null;
   };
 };
 
@@ -40,17 +41,28 @@ export const buildProviderConfig = ({
   apiKey,
   baseUrl,
   embeddingDims,
+  maxTokens,
 }: {
   provider: string;
   model: string;
   apiKey?: string;
   baseUrl?: string;
   embeddingDims?: string;
+  maxTokens?: string;
 }) => {
   if (!provider) {
     return undefined;
   }
 
+  const tokenLimit = maxTokens?.trim();
+  if (
+    tokenLimit &&
+    (!/^\d+$/.test(tokenLimit) ||
+      Number(tokenLimit) < 1 ||
+      !Number.isSafeInteger(Number(tokenLimit)))
+  ) {
+    throw new Error("Max tokens must be a positive integer.");
+  }
   const key = apiKey?.trim();
   const dimensions = embeddingDims?.trim();
   if (
@@ -85,6 +97,9 @@ export const buildProviderConfig = ({
     provider,
     config: {
       model: model.trim() || undefined,
+      ...(maxTokens !== undefined
+        ? { max_tokens: tokenLimit ? Number(tokenLimit) : null }
+        : {}),
       // Redacted values are display-only and must never overwrite saved secrets.
       api_key: key && !/\[redacted\]|\*{3,}|•{3,}/i.test(key) ? key : undefined,
       ...(provider === "openai" && baseUrl !== undefined

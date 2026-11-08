@@ -22,8 +22,9 @@ from mem0.configs.prompts import (
     PROCEDURAL_MEMORY_SYSTEM_PROMPT,
     generate_additive_extraction_prompt,
 )
-from mem0.exceptions import LLMError, VectorStoreError
+from mem0.exceptions import LLMError, LLMResponseError
 from mem0.exceptions import ValidationError as Mem0ValidationError
+from mem0.exceptions import VectorStoreError
 from mem0.memory.base import MemoryBase
 from mem0.memory.notices import (
     PERFORMANCE_SLOW_QUERY_THRESHOLD_SECONDS,
@@ -52,7 +53,6 @@ from mem0.memory.setup import mem0_dir, setup_config
 from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import MEM0_TELEMETRY, capture_event
 from mem0.memory.utils import (
-    extract_json,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
@@ -80,6 +80,34 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*swigva
 
 # Initialize logger early for util functions
 logger = logging.getLogger(__name__)
+
+
+def _parse_extraction_response(response):
+    """Validate the complete extraction before any memory or conversation writes."""
+    if response is None or (isinstance(response, str) and not response.strip()):
+        raise LLMResponseError("The LLM returned an empty response.", error_code="llm_empty_response")
+    if not isinstance(response, str):
+        raise LLMResponseError("The LLM returned an invalid extraction response.")
+    response = remove_code_blocks(response)
+    if not response:
+        raise LLMResponseError("The LLM returned an empty response.", error_code="llm_empty_response")
+    try:
+        # Do not salvage a nested JSON fragment from incomplete model output.
+        result = json.loads(response, strict=False)
+    except (ValueError, RecursionError):
+        raise LLMResponseError("The LLM returned invalid JSON for memory extraction.") from None
+    if not isinstance(result, dict) or not isinstance(result.get("memory"), list):
+        raise LLMResponseError("The LLM returned an invalid memory extraction schema.")
+    memories = result["memory"]
+    for memory in memories:
+        if (
+            not isinstance(memory, dict)
+            or not isinstance(memory.get("text"), str)
+            or not memory["text"].strip()
+            or ("attributed_to" in memory and not isinstance(memory["attributed_to"], str))
+        ):
+            raise LLMResponseError("The LLM returned an invalid memory extraction entry.")
+    return memories
 
 
 def _vector_store_list_rows(listed):
@@ -962,28 +990,13 @@ class Memory(MemoryBase):
                 ],
                 response_format={"type": "json_object"},
             )
-        except Exception as e:
-            # Re-raise so callers can implement provider fallback / retry.
-            # The original silent ``return []`` made upstream callers unable to
-            # distinguish "LLM unavailable" (429/5xx/timeout) from "LLM
-            # extracted no facts" -- both surfaced as an empty list.
-            logger.error(f"LLM extraction failed: {e}")
-            raise LLMError(f"LLM extraction failed: {e}") from e
+        except LLMResponseError:
+            raise
+        except Exception:
+            # Provider exceptions may contain prompts, credentials, or response bodies.
+            raise LLMError("LLM extraction failed. Check the provider configuration and retry.") from None
 
-        # Parse response
-        try:
-            response = remove_code_blocks(response)
-            if not response or not response.strip():
-                extracted_memories = []
-            else:
-                try:
-                    extracted_memories = json.loads(response, strict=False).get("memory", [])
-                except json.JSONDecodeError:
-                    extracted_json = extract_json(response)
-                    extracted_memories = json.loads(extracted_json, strict=False).get("memory", [])
-        except Exception as e:
-            logger.error(f"Error parsing extraction response: {e}")
-            extracted_memories = []
+        extracted_memories = _parse_extraction_response(response)
 
         if not extracted_memories:
             # Save messages even if nothing extracted
@@ -1021,7 +1034,7 @@ class Memory(MemoryBase):
 
             mem_hash = hashlib.md5(text.encode()).hexdigest()
             if mem_hash in existing_hashes or mem_hash in seen_hashes:
-                logger.debug(f"Skipping duplicate memory (hash match): {text[:50]}")
+                logger.debug("Skipping duplicate memory (hash match)")
                 continue
             seen_hashes.add(mem_hash)
 
@@ -2027,14 +2040,15 @@ class Memory(MemoryBase):
         try:
             procedural_memory = self.llm.generate_response(messages=parsed_messages)
             procedural_memory = remove_code_blocks(procedural_memory)
-        except Exception as e:
-            logger.error(f"Error generating procedural memory summary: {e}")
+        except (LLMResponseError, ImportError):
             raise
+        except Exception:
+            raise LLMError("LLM procedural memory generation failed. Check the provider configuration and retry.") from None
 
         if not procedural_memory:
-            raise ValueError(
-                "The LLM returned no content for the procedural memory summary. "
-                "The model may have declined the request or returned an empty response."
+            raise LLMResponseError(
+                "The LLM returned no content for the procedural memory summary.",
+                error_code="llm_empty_response",
             )
 
         if metadata is None:
@@ -2648,26 +2662,13 @@ class AsyncMemory(MemoryBase):
                 ],
                 response_format={"type": "json_object"},
             )
-        except Exception as e:
-            # Re-raise so callers can implement provider fallback / retry
-            # (see sync counterpart for rationale).
-            logger.error(f"LLM extraction failed (async): {e}")
-            raise LLMError(f"LLM extraction failed: {e}") from e
+        except LLMResponseError:
+            raise
+        except Exception:
+            # Provider exceptions may contain prompts, credentials, or response bodies.
+            raise LLMError("LLM extraction failed. Check the provider configuration and retry.") from None
 
-        # Parse response
-        try:
-            response = remove_code_blocks(response)
-            if not response or not response.strip():
-                extracted_memories = []
-            else:
-                try:
-                    extracted_memories = json.loads(response, strict=False).get("memory", [])
-                except json.JSONDecodeError:
-                    extracted_json = extract_json(response)
-                    extracted_memories = json.loads(extracted_json, strict=False).get("memory", [])
-        except Exception as e:
-            logger.error(f"Error parsing extraction response (async): {e}")
-            extracted_memories = []
+        extracted_memories = _parse_extraction_response(response)
 
         if not extracted_memories:
             await asyncio.to_thread(self.db.save_messages, messages, session_scope)
@@ -2702,7 +2703,7 @@ class AsyncMemory(MemoryBase):
 
             mem_hash = hashlib.md5(text.encode()).hexdigest()
             if mem_hash in existing_hashes or mem_hash in seen_hashes:
-                logger.debug(f"Skipping duplicate memory (hash match, async): {text[:50]}")
+                logger.debug("Skipping duplicate memory (hash match, async)")
                 continue
             seen_hashes.add(mem_hash)
 
@@ -3747,14 +3748,15 @@ class AsyncMemory(MemoryBase):
                 procedural_memory = await asyncio.to_thread(self.llm.generate_response, messages=parsed_messages)
                 procedural_memory = remove_code_blocks(procedural_memory)
 
-        except Exception as e:
-            logger.error(f"Error generating procedural memory summary: {e}")
+        except (LLMResponseError, ImportError):
             raise
+        except Exception:
+            raise LLMError("LLM procedural memory generation failed. Check the provider configuration and retry.") from None
 
         if not procedural_memory:
-            raise ValueError(
-                "The LLM returned no content for the procedural memory summary. "
-                "The model may have declined the request or returned an empty response."
+            raise LLMResponseError(
+                "The LLM returned no content for the procedural memory summary.",
+                error_code="llm_empty_response",
             )
 
         if metadata is None:

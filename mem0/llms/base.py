@@ -1,7 +1,9 @@
+import json
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
 from mem0.configs.llms.base import BaseLlmConfig
+from mem0.exceptions import LLMResponseError
 
 
 class LLMBase(ABC):
@@ -56,8 +58,14 @@ class LLMBase(ABC):
             return explicit
 
         reasoning_models = {
-            "o1", "o1-preview", "o3-mini", "o3",
-            "gpt-5", "gpt-5o", "gpt-5o-mini", "gpt-5o-micro",
+            "o1",
+            "o1-preview",
+            "o3-mini",
+            "o3",
+            "gpt-5",
+            "gpt-5o",
+            "gpt-5o-mini",
+            "gpt-5o-micro",
         }
 
         model_lower = model.lower()
@@ -97,18 +105,20 @@ class LLMBase(ABC):
         """
         Get parameters that are supported by the current model.
         Filters out unsupported parameters for reasoning models and GPT-5 series.
-        
+
         Args:
             **kwargs: Additional parameters to include
-            
+
         Returns:
             Dict: Filtered parameters dictionary
         """
-        model = getattr(self.config, 'model', '')
-        
+        model = getattr(self.config, "model", "")
+
         if self._is_reasoning_model(model):
             supported_params = {}
-            
+            if self.config.max_tokens is not None:
+                supported_params["max_completion_tokens"] = self.config.max_tokens
+
             if "messages" in kwargs:
                 supported_params["messages"] = kwargs["messages"]
             if "response_format" in kwargs:
@@ -119,7 +129,7 @@ class LLMBase(ABC):
                 supported_params["tool_choice"] = kwargs["tool_choice"]
 
             # Add reasoning_effort if configured
-            reasoning_effort = getattr(self.config, 'reasoning_effort', None)
+            reasoning_effort = getattr(self.config, "reasoning_effort", None)
             if reasoning_effort:
                 supported_params["reasoning_effort"] = reasoning_effort
 
@@ -159,12 +169,62 @@ class LLMBase(ABC):
         }
 
         model = getattr(self.config, "model", "")
-        if self._uses_max_completion_tokens(model):
-            params["max_completion_tokens"] = self.config.max_tokens
-        else:
-            params["max_tokens"] = self.config.max_tokens
+        if self.config.max_tokens is not None:
+            key = "max_completion_tokens" if self._uses_max_completion_tokens(model) else "max_tokens"
+            params[key] = self.config.max_tokens
 
         # Add provider-specific parameters from kwargs
         params.update(kwargs)
 
         return params
+
+    @staticmethod
+    def _check_finish_reason(reason):
+        # Prefer enum names: older Gemini SDKs use numeric enum values.
+        enum_name = getattr(reason, "name", None)
+        reason = enum_name if isinstance(enum_name, str) else getattr(reason, "value", reason)
+        if isinstance(reason, str) and reason.lower() in {
+            "length",
+            "max_tokens",
+            "max_token",
+            "max_output_tokens",
+            "model_length",
+            "max_tokens_reached",
+            "max_length",
+            "model_context_window_exceeded",
+        }:
+            raise LLMResponseError("LLM response was truncated.", error_code="llm_response_truncated")
+
+    @staticmethod
+    def _validate_response_content(content, tool_calls=None):
+        if not tool_calls and (content is None or (isinstance(content, (str, list)) and not content)):
+            raise LLMResponseError("LLM returned an empty response.", error_code="llm_empty_response")
+        if not tool_calls and isinstance(content, str) and not content.strip():
+            raise LLMResponseError("LLM returned an empty response.", error_code="llm_empty_response")
+
+    def _validate_chat_response(self, response, tools=None):
+        if not response.choices:
+            raise LLMResponseError("LLM returned an empty response.", error_code="llm_empty_response")
+        choice = response.choices[0]
+        self._check_finish_reason(getattr(choice, "finish_reason", None))
+        self._validate_response_content(
+            choice.message.content, getattr(choice.message, "tool_calls", None) if tools else None
+        )
+
+    @staticmethod
+    def _parse_tool_arguments(arguments):
+        try:
+            if isinstance(arguments, str):
+                text = arguments.strip()
+                if text.startswith("```json\n") and text.endswith("```"):
+                    text = text[8:-3].strip()
+                elif text.startswith("```\n") and text.endswith("```"):
+                    text = text[4:-3].strip()
+                parsed = json.loads(text)
+            else:
+                parsed = arguments
+            if not isinstance(parsed, dict):
+                raise ValueError("Tool arguments must be an object")
+            return parsed
+        except (ValueError, TypeError):
+            raise LLMResponseError("LLM returned invalid tool arguments.", error_code="llm_invalid_response") from None

@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 from typing import Dict, List, Optional, Union
@@ -10,7 +9,6 @@ except ImportError:
 
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +52,7 @@ class GroqLLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        self._validate_chat_response(response, tools)
         if tools:
             processed_response = {
                 "content": response.choices[0].message.content,
@@ -65,7 +64,7 @@ class GroqLLM(LLMBase):
                     processed_response["tool_calls"].append(
                         {
                             "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
+                            "arguments": self._parse_tool_arguments(tool_call.function.arguments),
                         }
                     )
 
@@ -96,9 +95,10 @@ class GroqLLM(LLMBase):
             "model": self.config.model,
             "messages": messages,
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
             "top_p": self.config.top_p,
         }
+        if self.config.max_tokens is not None:
+            params["max_tokens"] = self.config.max_tokens
         if response_format:
             requests_json = isinstance(response_format, dict) and response_format.get("type") in (
                 "json_object",

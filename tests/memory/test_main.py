@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from mem0.exceptions import LLMError, VectorStoreError
+from mem0.exceptions import LLMError, LLMResponseError, VectorStoreError
 from mem0.memory.main import AsyncMemory, Memory
 
 
@@ -56,15 +56,13 @@ class TestAddToVectorStoreErrors:
         mocker.patch("mem0.memory.main.capture_event")
 
         # Execute
-        with caplog.at_level(logging.ERROR):
-            result = mock_memory._add_to_vector_store(
+        with pytest.raises(LLMResponseError, match="invalid JSON"):
+            mock_memory._add_to_vector_store(
                 messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
             )
 
-        # Verify — v3 single-pass pipeline makes 1 LLM call, returns [] on parse error
         assert mock_memory.llm.generate_response.call_count == 1
-        assert result == []
-        assert any("Error parsing extraction response" in record.message for record in caplog.records), "Expected error message not found in logs"
+        mock_memory.db.save_messages.assert_not_called()
 
     def test_empty_llm_response_memory_actions(self, mock_memory, caplog):
         """Test empty response from LLM during memory actions (v3: single-pass, 1 LLM call)"""
@@ -72,14 +70,14 @@ class TestAddToVectorStoreErrors:
         mock_memory.llm.generate_response.return_value = ""
 
         # Execute
-        with caplog.at_level(logging.WARNING):
-            result = mock_memory._add_to_vector_store(
+        with pytest.raises(LLMResponseError, match="empty response"):
+            mock_memory._add_to_vector_store(
                 messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
             )
 
         # Verify — v3 only makes 1 LLM call (no separate merge step)
         assert mock_memory.llm.generate_response.call_count == 1
-        assert result == []  # Should return empty list when no memories processed
+        mock_memory.db.save_messages.assert_not_called()
 
     def test_llm_extraction_exception_is_reraised(self, mocker, mock_memory):
         """A provider error during fact extraction must propagate, not be swallowed.
@@ -99,9 +97,9 @@ class TestAddToVectorStoreErrors:
             mock_memory._add_to_vector_store(
                 messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
             )
-        # The documented LLMError contract is honoured, and the original
-        # provider exception is preserved as the cause for debugging.
-        assert isinstance(exc_info.value.__cause__, _ProviderError)
+        # Provider exception text must not leak through chained traceback logging.
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__suppress_context__
 
 
 class TestPromptOverridesCustomInstructions:
@@ -267,13 +265,12 @@ class TestAsyncAddToVectorStoreErrors:
         mock_async_memory.llm.generate_response.return_value = "invalid json"
         mocker.patch("mem0.memory.main.capture_event")
 
-        with caplog.at_level(logging.ERROR):
-            result = await mock_async_memory._add_to_vector_store(
+        with pytest.raises(LLMResponseError, match="invalid JSON"):
+            await mock_async_memory._add_to_vector_store(
                 messages=[{"role": "user", "content": "test"}], metadata={}, effective_filters={}, infer=True
             )
         assert mock_async_memory.llm.generate_response.call_count == 1
-        assert result == []
-        assert any("Error parsing extraction response" in record.message for record in caplog.records), "Expected error message not found in logs"
+        mock_async_memory.db.save_messages.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_async_empty_llm_response_memory_actions(self, mock_async_memory, caplog, mocker):
@@ -283,12 +280,12 @@ class TestAsyncAddToVectorStoreErrors:
         mock_capture_event = mocker.MagicMock()
         mocker.patch("mem0.memory.main.capture_event", mock_capture_event)
 
-        with caplog.at_level(logging.WARNING):
-            result = await mock_async_memory._add_to_vector_store(
+        with pytest.raises(LLMResponseError, match="empty response"):
+            await mock_async_memory._add_to_vector_store(
                 messages=[{"role": "user", "content": "test"}], metadata={}, effective_filters={}, infer=True
             )
 
-        assert result == []
+        mock_async_memory.db.save_messages.assert_not_called()
         assert mock_async_memory.llm.generate_response.call_count == 1
 
     @pytest.mark.asyncio
@@ -296,7 +293,7 @@ class TestAsyncAddToVectorStoreErrors:
         """Async counterpart of the sync re-raise guard.
 
         A provider error during fact extraction must propagate as ``LLMError``
-        (with the original exception preserved as the cause), not be swallowed
+        (without exposing provider exception text), not be swallowed
         into ``return []``. Without the fix a future revert of the async
         ``raise`` back to ``return []`` would pass the suite silently.
         """
@@ -312,7 +309,8 @@ class TestAsyncAddToVectorStoreErrors:
             await mock_async_memory._add_to_vector_store(
                 messages=[{"role": "user", "content": "test"}], metadata={}, effective_filters={}, infer=True
             )
-        assert isinstance(exc_info.value.__cause__, _ProviderError)
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__suppress_context__
 
 
 def _build_memory_instance(mocker, memory_cls):

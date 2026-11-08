@@ -1,4 +1,3 @@
-import json
 from typing import Dict, List, Optional, Union
 
 try:
@@ -9,7 +8,6 @@ except ImportError:
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.ollama import OllamaConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 
 class OllamaLLM(LLMBase):
@@ -51,6 +49,8 @@ class OllamaLLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        reason = response.get("done_reason") if isinstance(response, dict) else getattr(response, "done_reason", None)
+        self._check_finish_reason(reason)
         # Get the content from response
         if isinstance(response, dict):
             content = response["message"]["content"]
@@ -78,15 +78,16 @@ class OllamaLLM(LLMBase):
                     name = getattr(fn, "name", "") if fn else ""
                     arguments = getattr(fn, "arguments", {}) if fn else {}
 
-                if isinstance(arguments, str):
-                    arguments = json.loads(extract_json(arguments))
+                arguments = self._parse_tool_arguments(arguments)
 
                 processed_response["tool_calls"].append(
                     {"name": name, "arguments": arguments}
                 )
 
+            self._validate_response_content(content, processed_response["tool_calls"])
             return processed_response
         else:
+            self._validate_response_content(content)
             return content
 
     def generate_response(
@@ -111,6 +112,8 @@ class OllamaLLM(LLMBase):
             str: The generated response.
         """
         # Build parameters for Ollama
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         params = {
             "model": self.config.model,
             "messages": messages,
@@ -129,9 +132,10 @@ class OllamaLLM(LLMBase):
         # Add options for Ollama (temperature, num_predict, top_p)
         options = {
             "temperature": self.config.temperature,
-            "num_predict": self.config.max_tokens,
             "top_p": self.config.top_p,
         }
+        if self.config.max_tokens is not None:
+            options["num_predict"] = self.config.max_tokens
         params["options"] = options
 
         # Remove OpenAI-specific parameters that Ollama doesn't support

@@ -33,6 +33,11 @@ class LangchainLLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        metadata = response.response_metadata or {}
+        self._check_finish_reason(metadata.get("finish_reason") or metadata.get("stop_reason"))
+        self._validate_response_content(response.content, response.tool_calls if tools else None)
+        if getattr(response, "invalid_tool_calls", None):
+            self._parse_tool_arguments("invalid")
         if not tools:
             return response.content
 
@@ -74,6 +79,8 @@ class LangchainLLM(LLMBase):
             str: The generated response.
         """
         # Convert the messages to LangChain's tuple format
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         langchain_messages = []
         for message in messages:
             role = message["role"]
@@ -93,5 +100,7 @@ class LangchainLLM(LLMBase):
         if tools:
             langchain_model = langchain_model.bind_tools(tools=tools, tool_choice=tool_choice)
 
+        if self.config.max_tokens is not None:
+            kwargs.setdefault("max_tokens", self.config.max_tokens)
         response: AIMessage = langchain_model.invoke(langchain_messages, **kwargs)
         return self._parse_response(response, tools)

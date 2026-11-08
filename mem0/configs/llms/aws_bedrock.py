@@ -15,7 +15,7 @@ class AWSBedrockConfig(BaseLlmConfig):
         self,
         model: Optional[str] = None,
         temperature: float = 0.1,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
         top_k: int = 1,
         aws_access_key_id: Optional[str] = None,

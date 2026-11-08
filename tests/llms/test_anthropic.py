@@ -6,6 +6,7 @@ pytest.importorskip("anthropic", reason="anthropic package not installed")
 
 from mem0.configs.llms.anthropic import AnthropicConfig
 from mem0.configs.llms.base import BaseLlmConfig
+from mem0.exceptions import LLMResponseError
 from mem0.llms.anthropic import AnthropicLLM
 
 
@@ -19,18 +20,18 @@ def mock_anthropic_client():
 
 def test_default_config_omits_top_p(mock_anthropic_client):
     """Default AnthropicConfig should not set top_p to avoid conflict with temperature."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
     assert config.top_p is None
     assert config.temperature == 0.1
 
 
 def test_generate_response_does_not_send_top_p_by_default(mock_anthropic_client):
     """Anthropic API rejects temperature and top_p together; top_p must be omitted by default."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
     llm = AnthropicLLM(config)
 
     mock_response = Mock()
-    mock_response.content = [Mock(text="Hello!")]
+    mock_response.content = [Mock(type="text", text="Hello!")]
     mock_anthropic_client.messages.create.return_value = mock_response
 
     messages = [
@@ -47,11 +48,11 @@ def test_generate_response_does_not_send_top_p_by_default(mock_anthropic_client)
 
 def test_generate_response_sends_top_p_alone_when_no_temperature(mock_anthropic_client):
     """When user sets only top_p (no temperature), top_p should be sent."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", top_p=0.9, temperature=None)
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100, top_p=0.9, temperature=None)
     llm = AnthropicLLM(config)
 
     mock_response = Mock()
-    mock_response.content = [Mock(text="Hello!")]
+    mock_response.content = [Mock(type="text", text="Hello!")]
     mock_anthropic_client.messages.create.return_value = mock_response
 
     messages = [
@@ -68,11 +69,11 @@ def test_generate_response_sends_top_p_alone_when_no_temperature(mock_anthropic_
 
 def test_both_set_prefers_temperature_over_top_p(mock_anthropic_client):
     """When both temperature and top_p are set, temperature wins and top_p is dropped."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", top_p=0.9, temperature=0.5)
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100, top_p=0.9, temperature=0.5)
     llm = AnthropicLLM(config)
 
     mock_response = Mock()
-    mock_response.content = [Mock(text="Hello!")]
+    mock_response.content = [Mock(type="text", text="Hello!")]
     mock_anthropic_client.messages.create.return_value = mock_response
 
     messages = [{"role": "user", "content": "Hi"}]
@@ -88,7 +89,7 @@ def test_configured_base_url_is_passed_to_client():
     with patch("mem0.llms.anthropic.anthropic") as mock_anthropic:
         config = AnthropicConfig(
             model="claude-opus-4-6",
-            api_key="test-key",
+            api_key="test-key", max_tokens=100,
             anthropic_base_url="https://proxy.example.com",
         )
         AnthropicLLM(config)
@@ -100,7 +101,7 @@ def test_base_url_falls_back_to_env(monkeypatch):
     """When no base_url is configured, ANTHROPIC_BASE_URL is used."""
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env.example.com")
     with patch("mem0.llms.anthropic.anthropic") as mock_anthropic:
-        config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+        config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
         AnthropicLLM(config)
 
     assert mock_anthropic.Anthropic.call_args[1]["base_url"] == "https://env.example.com"
@@ -110,7 +111,7 @@ def test_base_url_omitted_when_unset(monkeypatch):
     """With no base_url anywhere, base_url must not be forced to None on the client."""
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     with patch("mem0.llms.anthropic.anthropic") as mock_anthropic:
-        config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+        config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
         AnthropicLLM(config)
 
     assert "base_url" not in mock_anthropic.Anthropic.call_args[1]
@@ -118,11 +119,11 @@ def test_base_url_omitted_when_unset(monkeypatch):
 
 def test_base_config_conversion_does_not_send_both(mock_anthropic_client):
     """BaseLlmConfig defaults both temperature=0.1 and top_p=0.1; Anthropic must not send both."""
-    base_config = BaseLlmConfig(model="claude-opus-4-6", api_key="test-key")
+    base_config = BaseLlmConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
     llm = AnthropicLLM(base_config)
 
     mock_response = Mock()
-    mock_response.content = [Mock(text="Hello!")]
+    mock_response.content = [Mock(type="text", text="Hello!")]
     mock_anthropic_client.messages.create.return_value = mock_response
 
     messages = [{"role": "user", "content": "Hi"}]
@@ -152,11 +153,11 @@ def test_base_config_conversion_does_not_send_both(mock_anthropic_client):
     ],
 )
 def test_enable_sampling_parameters_for_current_models(mock_anthropic_client, model, expected):
-    config = AnthropicConfig(model=model, api_key="test-key", top_p=0.9)
+    config = AnthropicConfig(model=model, api_key="test-key", max_tokens=100, top_p=0.9)
     llm = AnthropicLLM(config)
 
     mock_response = Mock()
-    mock_response.content = [Mock(text="Hello!")]
+    mock_response.content = [Mock(type="text", text="Hello!")]
     mock_anthropic_client.messages.create.return_value = mock_response
 
     messages = [{"role": "user", "content": "Hi"}]
@@ -168,7 +169,7 @@ def test_enable_sampling_parameters_for_current_models(mock_anthropic_client, mo
 
 def test_generate_response_returns_text_when_thinking_block_precedes_it(mock_anthropic_client):
     """Extended thinking responses put a thinking block before the text block; parsing must skip it."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
     llm = AnthropicLLM(config)
 
     thinking_block = Mock(spec=["type", "thinking", "signature"])
@@ -186,23 +187,23 @@ def test_generate_response_returns_text_when_thinking_block_precedes_it(mock_ant
     assert result == "The answer"
 
 
-def test_generate_response_returns_empty_string_on_empty_content(mock_anthropic_client):
-    """A response with no content blocks must return "" instead of raising IndexError."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+def test_generate_response_rejects_empty_content(mock_anthropic_client):
+    """Empty provider output must propagate a typed error."""
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
     llm = AnthropicLLM(config)
 
     mock_response = Mock()
     mock_response.content = []
     mock_anthropic_client.messages.create.return_value = mock_response
 
-    result = llm.generate_response([{"role": "user", "content": "Hi"}])
-
-    assert result == ""
+    with pytest.raises(LLMResponseError) as exc:
+        llm.generate_response([{"role": "user", "content": "Hi"}])
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_generate_response_returns_text_for_plain_text_response(mock_anthropic_client):
     """Regular single-text-block responses keep returning the text unchanged."""
-    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key")
+    config = AnthropicConfig(model="claude-opus-4-6", api_key="test-key", max_tokens=100)
     llm = AnthropicLLM(config)
 
     text_block = Mock(spec=["type", "text"])
@@ -219,14 +220,14 @@ def test_generate_response_returns_text_for_plain_text_response(mock_anthropic_c
 def test_enable_sampling_parameters_respects_explicit_override(mock_anthropic_client):
     config = AnthropicConfig(
         model="claude-opus-4-6",
-        api_key="test-key",
+        api_key="test-key", max_tokens=100,
         top_p=0.9,
         enable_sampling_parameters=False,
     )
     llm = AnthropicLLM(config)
 
     mock_response = Mock()
-    mock_response.content = [Mock(text="Hello!")]
+    mock_response.content = [Mock(type="text", text="Hello!")]
     mock_anthropic_client.messages.create.return_value = mock_response
 
     messages = [{"role": "user", "content": "Hi"}]
@@ -235,3 +236,11 @@ def test_enable_sampling_parameters_respects_explicit_override(mock_anthropic_cl
     call_kwargs = mock_anthropic_client.messages.create.call_args[1]
     assert "temperature" not in call_kwargs
     assert "top_p" not in call_kwargs
+
+
+def test_missing_required_token_limit_is_explicit(mock_anthropic_client):
+    llm = AnthropicLLM(AnthropicConfig(api_key="test-key"))
+    assert llm.config.max_tokens is None
+    with pytest.raises(ValueError, match="requires an explicit"):
+        llm.generate_response([{"role": "user", "content": "Hi"}])
+    mock_anthropic_client.messages.create.assert_not_called()

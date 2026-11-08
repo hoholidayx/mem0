@@ -289,3 +289,39 @@ test("exact search storage dimensions cannot exceed 16000", () => {
     16000,
   );
 });
+
+test("max tokens defaults to omitted; explicit blank clears cap with null", () => {
+  assert.equal(
+    "max_tokens" in serialized({ provider: "openai", model: "chat" }).config,
+    false,
+  );
+  for (const maxTokens of ["", " "]) {
+    assert.equal(
+      serialized({ provider: "openai", model: "chat", maxTokens }).config
+        .max_tokens,
+      null,
+    );
+  }
+  assert.equal(
+    serialized({ provider: "openai", model: "chat", maxTokens: " 4096 " })
+      .config.max_tokens,
+    4096,
+  );
+});
+
+test("max tokens must be a positive safe integer", () => {
+  for (const maxTokens of [
+    "0",
+    "-1",
+    "1.5",
+    "bad",
+    "Infinity",
+    "9007199254740992",
+  ]) {
+    assert.throws(
+      () =>
+        buildProviderConfig({ provider: "openai", model: "chat", maxTokens }),
+      /positive integer/,
+    );
+  }
+});

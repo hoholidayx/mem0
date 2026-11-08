@@ -116,6 +116,8 @@ class AnthropicLLM(LLMBase):
             str: The generated response.
         """
         # Separate system message from other messages
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         system_message = ""
         filtered_messages = []
         for message in messages:
@@ -137,17 +139,21 @@ class AnthropicLLM(LLMBase):
             params["tools"] = tools
             params["tool_choice"] = {"type": tool_choice}
 
+        if params.get("max_tokens") is None:
+            raise ValueError("Anthropic Messages requires an explicit positive max_tokens in LLM configuration.")
         response = self.client.messages.create(**params)
         return self._parse_response(response, tools)
 
     def _parse_response(self, response, tools):
+        self._check_finish_reason(getattr(response, "stop_reason", None))
         if tools:
             result = {"content": None, "tool_calls": []}
             for block in response.content:
                 if block.type == "text":
                     result["content"] = block.text
                 elif block.type == "tool_use":
-                    result["tool_calls"].append({"name": block.name, "arguments": block.input})
+                    result["tool_calls"].append({"name": block.name, "arguments": self._parse_tool_arguments(block.input)})
+            self._validate_response_content(result["content"], result["tool_calls"])
             return result
 
         # Thinking-enabled responses put a thinking block before the text
@@ -155,5 +161,6 @@ class AnthropicLLM(LLMBase):
         # text block like the tools branch above instead of indexing content[0].
         for block in response.content:
             if block.type == "text":
+                self._validate_response_content(block.text)
                 return block.text
-        return ""
+        self._validate_response_content(None)

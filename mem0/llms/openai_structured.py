@@ -1,9 +1,10 @@
 import os
 from typing import Dict, List, Optional
 
-from openai import OpenAI
+from openai import LengthFinishReasonError, OpenAI
 
 from mem0.configs.llms.base import BaseLlmConfig
+from mem0.exceptions import LLMResponseError
 from mem0.llms.base import LLMBase
 
 
@@ -45,5 +46,9 @@ class OpenAIStructuredLLM(LLMBase):
             params["tools"] = tools
             params["tool_choice"] = tool_choice
 
-        response = self.client.beta.chat.completions.parse(**params)
+        try:
+            response = self.client.beta.chat.completions.parse(**params)
+        except LengthFinishReasonError:
+            raise LLMResponseError("LLM response was truncated.", error_code="llm_response_truncated") from None
+        self._validate_chat_response(response, tools)
         return response.choices[0].message.content

@@ -363,6 +363,20 @@ class LLMError(MemoryError):
         super().__init__(message, error_code, details, suggestion, debug_info)
 
 
+class LLMResponseError(LLMError):
+    """An empty, incomplete, or invalid model response with a safe public message.
+
+    Callers must supply a fixed message, never provider content or exception text.
+    """
+
+    def __init__(self, message: str, error_code: str = "llm_invalid_response"):
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            suggestion="Retry the request or check the LLM configuration and output token limit.",
+        )
+
+
 class DatabaseError(MemoryError):
     """Raised when database operations fail.
     

@@ -1,4 +1,3 @@
-import json
 from typing import Dict, List, Optional
 
 try:
@@ -10,7 +9,6 @@ except ImportError as e:
 
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 
 class LiteLLM(LLMBase):
@@ -31,6 +29,7 @@ class LiteLLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        self._validate_chat_response(response, tools)
         if tools:
             processed_response = {
                 "content": response.choices[0].message.content,
@@ -42,7 +41,7 @@ class LiteLLM(LLMBase):
                     processed_response["tool_calls"].append(
                         {
                             "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
+                            "arguments": self._parse_tool_arguments(tool_call.function.arguments),
                         }
                     )
 
@@ -78,10 +77,10 @@ class LiteLLM(LLMBase):
             "temperature": self.config.temperature,
             "top_p": self.config.top_p,
         }
-        if self._uses_max_completion_tokens(self.config.model):
-            params["max_completion_tokens"] = self.config.max_tokens
-        else:
-            params["max_tokens"] = self.config.max_tokens
+        params.update(self._get_supported_params(messages=messages))
+        if self._is_reasoning_model(self.config.model):
+            params.pop("temperature", None)
+            params.pop("top_p", None)
         if response_format:
             params["response_format"] = response_format
         if tools:  # TODO: Remove tools if no issues found with new memory addition logic

@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 from typing import Dict, List, Optional, Union
 
@@ -9,7 +8,6 @@ from openai import AzureOpenAI
 from mem0.configs.llms.azure import AzureOpenAIConfig
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 SCOPE = "https://cognitiveservices.azure.com/.default"
 
@@ -101,6 +99,7 @@ class AzureOpenAILLM(LLMBase):
         Returns:
             str or dict: The processed response.
         """
+        self._validate_chat_response(response, tools)
         if tools:
             processed_response = {
                 "content": response.choices[0].message.content,
@@ -112,7 +111,7 @@ class AzureOpenAILLM(LLMBase):
                     processed_response["tool_calls"].append(
                         {
                             "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
+                            "arguments": self._parse_tool_arguments(tool_call.function.arguments),
                         }
                     )
 
@@ -146,6 +145,8 @@ class AzureOpenAILLM(LLMBase):
         # "assistant" in the prompt, so it is rewritten to "ai" before the request.
         # Work on a copy so the caller's messages are left untouched and string-only
         # content is handled without breaking multimodal (list) content.
+        if kwargs.get("stream"):
+            raise ValueError("Streaming is not supported by the memory LLM response interface.")
         messages = self._rewrite_assistant_keyword(messages)
 
         params = self._get_supported_params(messages=messages, **kwargs)

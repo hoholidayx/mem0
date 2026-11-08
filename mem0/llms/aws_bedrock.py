@@ -11,14 +11,28 @@ except ImportError:
 
 from mem0.configs.llms.aws_bedrock import AWSBedrockConfig
 from mem0.configs.llms.base import BaseLlmConfig
+from mem0.exceptions import LLMResponseError
 from mem0.llms.base import LLMBase
-from mem0.memory.utils import extract_json
 
 logger = logging.getLogger(__name__)
 
 PROVIDERS = [
-    "ai21", "amazon", "anthropic", "cohere", "meta", "mistral", "stability", "writer",
-    "deepseek", "gpt-oss", "perplexity", "snowflake", "titan", "command", "j2", "llama",
+    "ai21",
+    "amazon",
+    "anthropic",
+    "cohere",
+    "meta",
+    "mistral",
+    "stability",
+    "writer",
+    "deepseek",
+    "gpt-oss",
+    "perplexity",
+    "snowflake",
+    "titan",
+    "command",
+    "j2",
+    "llama",
     "minimax",
 ]
 
@@ -184,11 +198,11 @@ class AWSBedrockLLM(LLMBase):
     def _format_messages_amazon(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         """Format messages for Amazon models (including Nova)."""
         formatted_messages = []
-        
+
         for message in messages:
             role = message["role"]
             content = message["content"]
-            
+
             if role == "system":
                 # Amazon models support system messages
                 formatted_messages.append({"role": "system", "content": content})
@@ -196,28 +210,28 @@ class AWSBedrockLLM(LLMBase):
                 formatted_messages.append({"role": "user", "content": content})
             elif role == "assistant":
                 formatted_messages.append({"role": "assistant", "content": content})
-        
+
         return formatted_messages
 
     def _format_messages_meta(self, messages: List[Dict[str, str]]) -> str:
         """Format messages for Meta models."""
         formatted_messages = []
-        
+
         for message in messages:
             role = message["role"].capitalize()
             content = message["content"]
             formatted_messages.append(f"{role}: {content}")
-        
+
         return "\n".join(formatted_messages)
 
     def _format_messages_mistral(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         """Format messages for Mistral models."""
         formatted_messages = []
-        
+
         for message in messages:
             role = message["role"]
             content = message["content"]
-            
+
             if role == "system":
                 # Mistral supports system messages
                 formatted_messages.append({"role": "system", "content": content})
@@ -225,7 +239,7 @@ class AWSBedrockLLM(LLMBase):
                 formatted_messages.append({"role": "user", "content": content})
             elif role == "assistant":
                 formatted_messages.append({"role": "assistant", "content": content})
-        
+
         return formatted_messages
 
     def _format_messages_generic(self, messages: List[Dict[str, str]]) -> str:
@@ -271,7 +285,7 @@ class AWSBedrockLLM(LLMBase):
         # Apply provider mappings
         if self.provider in provider_mappings:
             for old_key, new_key in provider_mappings[self.provider].items():
-                if old_key in self.model_config:
+                if self.model_config.get(old_key) is not None:
                     input_body[new_key] = self.model_config[old_key]
 
         # Special handling for specific providers
@@ -283,22 +297,24 @@ class AWSBedrockLLM(LLMBase):
                 # Nova models use the converse API format
                 input_body = {
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": self.model_config.get("max_tokens", 5000),
+                    "max_tokens": self.model_config.get("max_tokens"),
                     "temperature": self.model_config.get("temperature", 0.1),
                 }
                 self._merge_optional_top_p(input_body)
             else:
                 # Legacy Amazon models
                 text_gen_config: Dict[str, Any] = {
-                    "maxTokenCount": self.model_config.get("max_tokens", 5000),
+                    "maxTokenCount": self.model_config.get("max_tokens"),
                     "temperature": self.model_config.get("temperature", 0.1),
                 }
                 self._merge_optional_top_p(text_gen_config, key="topP")
                 input_body = {"inputText": prompt, "textGenerationConfig": text_gen_config}
         elif self.provider == "anthropic":
+            if self.model_config.get("max_tokens") is None:
+                raise ValueError("Anthropic InvokeModel requires an explicit max_tokens; use Converse to omit it.")
             input_body = {
                 "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-                "max_tokens": self.model_config.get("max_tokens", 2000),
+                "max_tokens": self.model_config.get("max_tokens"),
                 "temperature": self.model_config.get("temperature", 0.1),
                 "anthropic_version": "bedrock-2023-05-31",
             }
@@ -306,22 +322,32 @@ class AWSBedrockLLM(LLMBase):
         elif self.provider == "meta":
             input_body = {
                 "prompt": prompt,
-                "max_gen_len": self.model_config.get("max_tokens", 5000),
+                "max_gen_len": self.model_config.get("max_tokens"),
                 "temperature": self.model_config.get("temperature", 0.1),
             }
             self._merge_optional_top_p(input_body)
         elif self.provider == "mistral":
             input_body = {
                 "prompt": prompt,
-                "max_tokens": self.model_config.get("max_tokens", 5000),
+                "max_tokens": self.model_config.get("max_tokens"),
                 "temperature": self.model_config.get("temperature", 0.1),
             }
             self._merge_optional_top_p(input_body)
         else:
             # Generic case - add all model config parameters
-            input_body.update(self.model_config)
+            input_body.update(
+                {
+                    provider_mappings.get(self.provider, {}).get(k, k): v
+                    for k, v in self.model_config.items()
+                    if v is not None
+                }
+            )
 
-        return input_body
+        if "textGenerationConfig" in input_body:
+            input_body["textGenerationConfig"] = {
+                k: v for k, v in input_body["textGenerationConfig"].items() if v is not None
+            }
+        return {k: v for k, v in input_body.items() if v is not None}
 
     def _convert_tool_format(self, original_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -360,77 +386,103 @@ class AWSBedrockLLM(LLMBase):
 
         return new_tools
 
+    @staticmethod
+    def _check_stop_reason(response: Dict[str, Any]) -> None:
+        for key in ("stopReason", "stop_reason", "finish_reason", "completionReason"):
+            reason = response.get(key)
+            if isinstance(reason, str) and reason.lower() in {
+                "max_tokens",
+                "max_token",
+                "length",
+                "max_length",
+                "max_tokens_reached",
+                "model_length",
+                "max_output_tokens",
+                "model_context_window_exceeded",
+            }:
+                raise LLMResponseError("LLM response was truncated.", error_code="llm_response_truncated")
+        finish_reason = response.get("finishReason")
+        if isinstance(finish_reason, dict) and finish_reason.get("reason") == "length":
+            raise LLMResponseError("LLM response was truncated.", error_code="llm_response_truncated")
+
+    @staticmethod
+    def _require_text(text: Any) -> str:
+        if not isinstance(text, str) or not text.strip():
+            raise LLMResponseError("LLM returned an empty response.", error_code="llm_empty_response")
+        return text
+
     def _parse_response(
         self, response: Dict[str, Any], tools: Optional[List[Dict]] = None
     ) -> Union[str, Dict[str, Any]]:
-        """
-        Parse response from Bedrock API.
-
-        Args:
-            response: Raw API response
-            tools: List of tools if used
-
-        Returns:
-            Parsed response
-        """
-        if tools:
-            # Handle tool-enabled responses
-            processed_response = {"tool_calls": []}
-
-            if response.get("output", {}).get("message", {}).get("content"):
-                for item in response["output"]["message"]["content"]:
-                    if "toolUse" in item:
-                        processed_response["tool_calls"].append(
-                            {
-                                "name": item["toolUse"]["name"],
-                                "arguments": json.loads(extract_json(json.dumps(item["toolUse"]["input"]))),
-                            }
-                        )
-
-            return processed_response
-
-        # Handle regular text responses
+        """Parse provider output without treating invalid or truncated responses as success."""
         try:
-            response_body = response.get("body").read().decode()
-            response_json = json.loads(response_body)
+            if not isinstance(response, dict):
+                response = {
+                    "stopReason": getattr(response, "stopReason", None),
+                    "output": {
+                        "message": {
+                            "content": [
+                                {"text": block.text}
+                                for block in response.output.message.content
+                                if hasattr(block, "text")
+                            ]
+                        }
+                    },
+                }
+            self._check_stop_reason(response)
+            if "output" in response:
+                blocks = response["output"]["message"]["content"]
+                text = "".join(block.get("text", "") for block in blocks)
+                if tools:
+                    calls = []
+                    for block in blocks:
+                        if "toolUse" in block:
+                            call = block["toolUse"]
+                            arguments = call["input"]
+                            if isinstance(arguments, str):
+                                arguments = json.loads(arguments)
+                            if not isinstance(arguments, dict) or not isinstance(call["name"], str) or not call["name"]:
+                                raise ValueError("Invalid tool call")
+                            calls.append({"name": call["name"], "arguments": arguments})
+                    if not calls:
+                        self._require_text(text)
+                    return {"tool_calls": calls, "content": text}
+                return self._require_text(text)
 
-            # Provider-specific response parsing
+            body = json.loads(response["body"].read())
+            self._check_stop_reason(body)
             if self.provider == "anthropic":
-                return response_json.get("content", [{"text": ""}])[0].get("text", "")
+                text = "".join(block.get("text", "") for block in body.get("content", []))
             elif self.provider == "amazon":
-                # Handle both Nova and legacy Amazon models
-                if "nova" in self.config.model.lower():
-                    # Nova models return content in a different format
-                    if "content" in response_json:
-                        return response_json["content"][0]["text"]
-                    elif "completion" in response_json:
-                        return response_json["completion"]
+                results = body.get("results", [])
+                if results:
+                    self._check_stop_reason(results[0])
+                    text = results[0].get("outputText", "")
                 else:
-                    # Legacy Amazon models
-                    return response_json.get("completion", "")
+                    text = body.get("completion", "")
             elif self.provider == "meta":
-                return response_json.get("generation", "")
-            elif self.provider == "mistral":
-                return response_json.get("outputs", [{"text": ""}])[0].get("text", "")
-            elif self.provider == "cohere":
-                return response_json.get("generations", [{"text": ""}])[0].get("text", "")
-            elif self.provider == "ai21":
-                return response_json.get("completions", [{"data": {"text": ""}}])[0].get("data", {}).get("text", "")
+                text = body.get("generation", "")
+            elif self.provider in ("mistral", "cohere", "ai21"):
+                key = {"mistral": "outputs", "cohere": "generations", "ai21": "completions"}[self.provider]
+                results = body.get(key) or [{}]
+                self._check_stop_reason(results[0])
+                text = (
+                    results[0].get("data", {}).get("text", "")
+                    if self.provider == "ai21"
+                    else results[0].get("text", "")
+                )
             else:
-                # Generic parsing - try common response fields
-                for field in ["content", "text", "completion", "generation"]:
-                    if field in response_json:
-                        if isinstance(response_json[field], list) and response_json[field]:
-                            return response_json[field][0].get("text", "")
-                        elif isinstance(response_json[field], str):
-                            return response_json[field]
-
-                # Fallback
-                return str(response_json)
-
-        except Exception as e:
-            logger.warning(f"Could not parse response: {e}")
-            return "Error parsing response"
+                text = ""
+                for field in ("content", "text", "completion", "generation"):
+                    if field in body:
+                        value = body[field]
+                        text = value[0].get("text", "") if isinstance(value, list) and value else value
+                        break
+            return self._require_text(text)
+        except LLMResponseError:
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+            raise LLMResponseError("LLM returned an invalid response.", error_code="llm_invalid_response") from None
 
     def generate_response(
         self,
@@ -455,17 +507,9 @@ class AWSBedrockLLM(LLMBase):
         Returns:
             Generated response
         """
-        try:
-            if tools and self.supports_tools:
-                # Use converse method for tool-enabled models
-                return self._generate_with_tools(messages, tools, stream)
-            else:
-                # Use standard invoke_model method
-                return self._generate_standard(messages, stream)
-
-        except Exception as e:
-            logger.error(f"Failed to generate response: {e}")
-            raise RuntimeError(f"Failed to generate response: {e}")
+        if tools and self.supports_tools:
+            return self._generate_with_tools(messages, tools, stream)
+        return self._generate_standard(messages, stream)
 
     @staticmethod
     def _convert_tools_to_converse_format(tools: List[Dict]) -> List[Dict]:
@@ -481,21 +525,12 @@ class AWSBedrockLLM(LLMBase):
                     "toolSpec": {
                         "name": func["name"],
                         "description": func.get("description", ""),
-                        "inputSchema": {
-                            "json": func.get("parameters", {})
-                        }
+                        "inputSchema": {"json": func.get("parameters", {})},
                     }
                 }
                 converse_tools.append(converse_tool)
 
         return converse_tools
-
-    def _default_max_tokens_for_converse(self) -> int:
-        """Default maxTokens if ``max_tokens`` is missing (Nova: 5000, else 2000)."""
-        model_id = (self.config.model or "").lower()
-        if self.provider == "amazon" and "nova" in model_id:
-            return 5000
-        return 2000
 
     def _build_inference_config(self) -> Dict[str, Any]:
         """Build Converse ``inferenceConfig``.
@@ -505,9 +540,11 @@ class AWSBedrockLLM(LLMBase):
         those providers even when the user has configured it.
         """
         inference_config: Dict[str, Any] = {
-            "maxTokens": self.model_config.get("max_tokens", self._default_max_tokens_for_converse()),
             "temperature": self.model_config.get("temperature", 0.1),
         }
+
+        if self.model_config.get("max_tokens") is not None:
+            inference_config["maxTokens"] = self.model_config["max_tokens"]
 
         top_p = self.model_config.get("top_p")
         if top_p is not None:
@@ -521,7 +558,9 @@ class AWSBedrockLLM(LLMBase):
 
         return inference_config
 
-    def _generate_with_tools(self, messages: List[Dict[str, str]], tools: List[Dict], stream: bool = False) -> Dict[str, Any]:
+    def _generate_with_tools(
+        self, messages: List[Dict[str, str]], tools: List[Dict], stream: bool = False
+    ) -> Dict[str, Any]:
         """Generate response with tool calling support using correct message format."""
         # Format messages for tool-enabled models
         system_message = None
@@ -579,22 +618,7 @@ class AWSBedrockLLM(LLMBase):
             # Use converse API for Anthropic models
             response = self.client.converse(**converse_params)
 
-            # Parse Converse API response. Claude reasoning models can emit a
-            # `reasoningContent` block before the `text` block, so iterate to
-            # find the first block that carries text instead of indexing
-            # content[0] (same approach as the MiniMax branch below).
-            if hasattr(response, 'output') and hasattr(response.output, 'message'):
-                for block in response.output.message.content:
-                    if hasattr(block, 'text'):
-                        return block.text
-                return ""
-            elif 'output' in response and 'message' in response['output']:
-                for block in response['output']['message']['content']:
-                    if 'text' in block:
-                        return block['text']
-                return ""
-            else:
-                return str(response)
+            return self._parse_response(response)
 
         elif self.provider == "minimax":
             # MiniMax models (e.g. minimax.minimax-m2.5) use the Bedrock Converse API.
@@ -624,10 +648,7 @@ class AWSBedrockLLM(LLMBase):
             if system_parts:
                 converse_params["system"] = [{"text": "\n".join(system_parts)}]
             response = self.client.converse(**converse_params)
-            for block in response["output"]["message"]["content"]:
-                if "text" in block:
-                    return block["text"]
-            return ""
+            return self._parse_response(response)
 
         elif self.provider == "amazon" and "nova" in self.config.model.lower():
             # Nova models use the Converse API even without tools
@@ -699,7 +720,7 @@ class AWSBedrockLLM(LLMBase):
             "supports_tools": self.supports_tools,
             "supports_vision": self.supports_vision,
             "supports_streaming": self.supports_streaming,
-            "max_tokens": self.model_config.get("max_tokens", 2000),
+            "max_tokens": self.model_config.get("max_tokens"),
         }
 
     def validate_model_access(self) -> bool:
@@ -710,9 +731,7 @@ class AWSBedrockLLM(LLMBase):
                 # Test Nova model with converse API
                 test_messages = [{"role": "user", "content": "test"}]
                 self.client.converse(
-                    modelId=self.config.model,
-                    messages=test_messages,
-                    inferenceConfig={"maxTokens": 10}
+                    modelId=self.config.model, messages=test_messages, inferenceConfig={"maxTokens": 10}
                 )
             else:
                 # Test other models with invoke_model

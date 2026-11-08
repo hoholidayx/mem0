@@ -41,6 +41,7 @@ export default function ConfigurationPage() {
   const [llmProvider, setLlmProvider] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmMaxTokens, setLlmMaxTokens] = useState("");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [embedderBaseUrl, setEmbedderBaseUrl] = useState("");
   const [embedderApiKey, setEmbedderApiKey] = useState("");
@@ -77,6 +78,7 @@ export default function ConfigurationPage() {
     setVectorSettings(storage);
     setInitialVectorSettings(storage);
     setLlmBaseUrl(config.llm?.config?.openai_base_url || "");
+    setLlmMaxTokens(config.llm?.config?.max_tokens?.toString() || "");
     setEmbedderBaseUrl(config.embedder?.config?.openai_base_url || "");
     setEmbeddingDims(config.embedder?.config?.embedding_dims?.toString() || "");
     setLlmProvider((current) => current || config.llm?.provider || "");
@@ -97,6 +99,7 @@ export default function ConfigurationPage() {
         provider: llmProvider,
         model: llmModel,
         apiKey: llmApiKey,
+        maxTokens: llmMaxTokens,
         baseUrl: llmBaseUrl,
       });
       const embedder = buildProviderConfig({
@@ -209,6 +212,24 @@ export default function ConfigurationPage() {
             Keys are independent. Leave blank to keep the saved key. Changing
             provider or base URL requires a new key.
           </p>
+          <div className="space-y-1">
+            <Label htmlFor="llm-max-tokens">LLM Max Tokens (optional)</Label>
+            <Input
+              id="llm-max-tokens"
+              type="number"
+              min="1"
+              step="1"
+              value={llmMaxTokens}
+              onChange={(event) => setLlmMaxTokens(event.target.value)}
+              disabled={!isAdmin || isSaving || isPrefilling}
+              placeholder="No client limit"
+            />
+            <p className="text-xs text-onSurface-default-tertiary">
+              Leave blank to omit the max_tokens parameter and clear any saved
+              cap. The provider&apos;s own model and output limits still apply.
+            </p>
+          </div>
+
           {llmProvider === "openai" && (
             <div className="space-y-1">
               <Label htmlFor="llm-base-url">LLM Base URL</Label>

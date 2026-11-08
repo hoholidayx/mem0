@@ -5,6 +5,7 @@ from google.genai import types
 
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.gemini import GeminiConfig
+from mem0.exceptions import LLMResponseError
 from mem0.llms.gemini import GeminiLLM
 
 
@@ -128,8 +129,9 @@ def test_parse_response_none_content_no_tools(mock_gemini_client: Mock):
     mock_candidate = Mock(content=None)
     mock_response = Mock(candidates=[mock_candidate])
 
-    result = llm._parse_response(mock_response, tools=None)
-    assert result == ""
+    with pytest.raises(LLMResponseError) as exc:
+        llm._parse_response(mock_response, tools=None)
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_parse_response_none_content_with_tools(mock_gemini_client: Mock):
@@ -140,8 +142,9 @@ def test_parse_response_none_content_with_tools(mock_gemini_client: Mock):
     mock_candidate = Mock(content=None)
     mock_response = Mock(candidates=[mock_candidate])
 
-    result = llm._parse_response(mock_response, tools=[{"function": {"name": "test"}}])
-    assert result == {"content": None, "tool_calls": []}
+    with pytest.raises(LLMResponseError) as exc:
+        llm._parse_response(mock_response, tools=[{"function": {"name": "test"}}])
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_parse_response_empty_candidates(mock_gemini_client: Mock):
@@ -150,8 +153,9 @@ def test_parse_response_empty_candidates(mock_gemini_client: Mock):
     llm = GeminiLLM(config)
 
     mock_response = Mock(candidates=[])
-    result = llm._parse_response(mock_response, tools=None)
-    assert result == ""
+    with pytest.raises(LLMResponseError) as exc:
+        llm._parse_response(mock_response, tools=None)
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_parse_response_none_candidates(mock_gemini_client: Mock):
@@ -160,8 +164,9 @@ def test_parse_response_none_candidates(mock_gemini_client: Mock):
     llm = GeminiLLM(config)
 
     mock_response = Mock(candidates=None)
-    result = llm._parse_response(mock_response, tools=None)
-    assert result == ""
+    with pytest.raises(LLMResponseError) as exc:
+        llm._parse_response(mock_response, tools=None)
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_parse_response_empty_parts_no_tools(mock_gemini_client: Mock):
@@ -173,8 +178,9 @@ def test_parse_response_empty_parts_no_tools(mock_gemini_client: Mock):
     mock_candidate = Mock(content=mock_content)
     mock_response = Mock(candidates=[mock_candidate])
 
-    result = llm._parse_response(mock_response, tools=None)
-    assert result == ""
+    with pytest.raises(LLMResponseError) as exc:
+        llm._parse_response(mock_response, tools=None)
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_parse_response_empty_parts_with_tools(mock_gemini_client: Mock):
@@ -186,8 +192,9 @@ def test_parse_response_empty_parts_with_tools(mock_gemini_client: Mock):
     mock_candidate = Mock(content=mock_content)
     mock_response = Mock(candidates=[mock_candidate])
 
-    result = llm._parse_response(mock_response, tools=[{"function": {"name": "test"}}])
-    assert result == {"content": None, "tool_calls": []}
+    with pytest.raises(LLMResponseError) as exc:
+        llm._parse_response(mock_response, tools=[{"function": {"name": "test"}}])
+    assert exc.value.error_code == "llm_empty_response"
 
 
 def test_none_config_values_omitted_from_generation_config(mock_gemini_client: Mock):

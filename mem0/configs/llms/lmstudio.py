@@ -15,7 +15,7 @@ class LMStudioConfig(BaseLlmConfig):
         model: Optional[str] = None,
         temperature: float = 0.1,
         api_key: Optional[str] = None,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
         top_p: float = 0.1,
         top_k: int = 1,
         enable_vision: bool = False,
@@ -32,7 +32,7 @@ class LMStudioConfig(BaseLlmConfig):
             model: LM Studio model to use, defaults to None
             temperature: Controls randomness, defaults to 0.1
             api_key: LM Studio API key, defaults to None
-            max_tokens: Maximum tokens to generate, defaults to 2000
+            max_tokens: Maximum tokens to generate, defaults to None (provider default)
             top_p: Nucleus sampling parameter, defaults to 0.1
             top_k: Top-k sampling parameter, defaults to 1
             enable_vision: Enable vision capabilities, defaults to False
