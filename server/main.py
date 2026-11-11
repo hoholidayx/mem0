@@ -1,10 +1,14 @@
 import asyncio
+import hmac
+import json
 import logging
 import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from math import isfinite
+from typing import Annotated, Any, Dict, List, Literal, Optional
+from uuid import UUID
 
 import telemetry
 from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, verify_auth
@@ -23,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from models import RequestLog, User
 from provider_config import ProviderConfigError, validate_base_url
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from rate_limit import limiter
 from routers import api_keys as api_keys_router
 from routers import auth as auth_router
@@ -456,14 +460,58 @@ def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
 
 
 ALL_MEMORIES_LIMIT = 1000
-_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at", "expiration_date"}
+_RESERVED_PAYLOAD_KEYS = {
+    "data",
+    "user_id",
+    "agent_id",
+    "run_id",
+    "hash",
+    "created_at",
+    "updated_at",
+    "expiration_date",
+}
+_SCOPED_PAYLOAD_FIELDS = ("actor_id", "role", "attributed_to")
+_RESERVED_LIST_FILTERS = (
+    _RESERVED_PAYLOAD_KEYS
+    | set(_SCOPED_PAYLOAD_FIELDS)
+    | {
+        "id",
+        "memory",
+        "text_lemmatized",
+        "userid",
+        "agentid",
+        "runid",
+        "and",
+        "or",
+        "not",
+    }
+)
+_LIST_FILTER_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}")
+_LIST_CURSOR = re.compile(r"[0-9a-f]{32}\.[0-9a-f]{64}")
+ListEntityID = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
 
 
-def _serialize_memory(row: Any) -> Dict[str, Any]:
+class MemoryListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: ListEntityID
+    agent_id: ListEntityID
+    run_id: Optional[ListEntityID] = None
+    scope: Literal["all", "session", "long-term"] = "all"
+    filters: Dict[str, Any] = Field(default_factory=dict, max_length=21)
+    show_expired: bool = False
+    since: Optional[str] = Field(None, description=SINCE_DESCRIPTION)
+    until: Optional[str] = Field(None, description=UNTIL_DESCRIPTION)
+    time_field: RecordTimeField = "created_at"
+    limit: int = Field(ALL_MEMORIES_LIMIT, strict=True, ge=1, le=ALL_MEMORIES_LIMIT)
+    cursor: Optional[str] = Field(None, max_length=128)
+
+
+def _serialize_memory(row: Any, *, scoped: bool = False) -> Dict[str, Any]:
     payload = getattr(row, "payload", None) or {}
-    return {
+    memory = {
         "id": getattr(row, "id", None),
-        "memory": payload.get("data"),
+        "memory": payload.get("data", "") if scoped else payload.get("data"),
         "user_id": payload.get("user_id"),
         "agent_id": payload.get("agent_id"),
         "run_id": payload.get("run_id"),
@@ -473,6 +521,13 @@ def _serialize_memory(row: Any) -> Dict[str, Any]:
         "created_at": payload.get("created_at"),
         "updated_at": payload.get("updated_at"),
     }
+    if scoped:
+        for field in _SCOPED_PAYLOAD_FIELDS:
+            if field in payload:
+                memory[field] = memory["metadata"].pop(field)
+        for field in ("id", "text_lemmatized"):
+            memory["metadata"].pop(field, None)
+    return memory
 
 
 def _parse_record_time(name: str, value: Optional[str]) -> Optional[datetime]:
@@ -503,6 +558,100 @@ def _record_time_filters(memory, since: Optional[str], until: Optional[str], tim
     if not isinstance(memory.vector_store, PGVector):
         raise HTTPException(status_code=400, detail="Record time filtering requires the pgvector store.")
     return {RECORD_TIME_RANGE: RecordTimeRange(field=time_field, since=start, until=end)}
+
+
+def _list_filter_scalar(value: Any) -> bool:
+    if isinstance(value, str):
+        return 0 < len(value) <= 512 and value != "*"
+    return type(value) in (bool, int) or (type(value) is float and isfinite(value))
+
+
+def _list_metadata_filters(filters: Dict[str, Any]) -> dict:
+    def normalize(value):
+        return json.dumps(value) if type(value) is bool else value
+
+    result = {}
+    for key, value in filters.items():
+        if not _LIST_FILTER_KEY.fullmatch(key) or key.lower() in _RESERVED_LIST_FILTERS:
+            raise HTTPException(status_code=400, detail="List filters must target non-reserved metadata fields.")
+        operators = value if isinstance(value, dict) else {"eq": value}
+        if not operators:
+            raise HTTPException(status_code=400, detail="List filters must contain a supported comparison.")
+        for op, operand in operators.items():
+            if op in ("eq", "ne") and _list_filter_scalar(operand):
+                normalized = normalize(operand)
+            elif op in ("in", "nin") and (
+                isinstance(operand, list) and 0 < len(operand) <= 20 and all(map(_list_filter_scalar, operand))
+            ):
+                normalized = [normalize(item) for item in operand]
+            elif op in ("gt", "gte", "lt", "lte") and type(operand) in (int, float) and _list_filter_scalar(operand):
+                normalized = operand
+            else:
+                raise HTTPException(status_code=400, detail="List filters must contain a supported comparison.")
+            if isinstance(value, dict):
+                result.setdefault(key, {})[op] = normalized
+            else:
+                result[key] = normalized
+    return result
+
+
+@app.post("/memories/list", summary="List a scoped page of memories")
+def list_memory_page(page: MemoryListRequest, _auth=Depends(verify_auth)):
+    from mem0.vector_stores.pgvector import PGVector
+
+    try:
+        if page.scope == "session" and page.run_id is None:
+            raise HTTPException(status_code=400, detail="Session scope requires run_id.")
+        memory = get_memory_instance()
+        store = memory.vector_store
+        if not isinstance(store, PGVector):
+            raise HTTPException(status_code=400, detail="Paged memory listing requires the pgvector store.")
+        metadata_filters = _list_metadata_filters(page.filters)
+        time_filters = _record_time_filters(memory, page.since, page.until, page.time_field)
+        query = page.model_dump(exclude={"cursor", "limit", "filters", "since", "until", "time_field"})
+        query.update(
+            collection=store.collection_name,
+            filters=metadata_filters,
+            record_time=[bound.model_dump(mode="json") for bound in time_filters.values()],
+        )
+        context = json.dumps(query, sort_keys=True, separators=(",", ":")).encode()
+
+        def sign_position(position: str) -> str:
+            data = b"mem0-list-v1\0" + position.encode() + context
+            return hmac.new(JWT_SECRET.encode(), data, "sha256").hexdigest()
+
+        after_id = None
+        if page.cursor is not None:
+            if not _LIST_CURSOR.fullmatch(page.cursor) or not hmac.compare_digest(
+                page.cursor[33:], sign_position(page.cursor[:32])
+            ):
+                raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
+            after_id = UUID(hex=page.cursor[:32])
+        rows = store.list_page(
+            {
+                **metadata_filters,
+                **time_filters,
+                "user_id": {"eq": page.user_id},
+                "agent_id": {"eq": page.agent_id},
+            },
+            scope=page.scope,
+            run_id=page.run_id,
+            visible_on=None if page.show_expired else datetime.now(timezone.utc).date(),
+            after_id=after_id,
+            top_k=page.limit + 1,
+        )
+        next_cursor = None
+        if len(rows) > page.limit:
+            position = UUID(rows[page.limit - 1].id).hex
+            next_cursor = f"{position}.{sign_position(position)}"
+        return {
+            "results": [_serialize_memory(row, scoped=True) for row in rows[:page.limit]],
+            "next_cursor": next_cursor,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        raise upstream_error()
 
 
 def _list_all_memories(memory, limit: int, filters: dict) -> Dict[str, Any]:

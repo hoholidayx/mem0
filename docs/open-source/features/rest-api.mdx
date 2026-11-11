@@ -252,6 +252,24 @@ Record-time filtering requires pgvector on PostgreSQL 16 or later. Semantic sear
 GET /memories?user_id=alice&since=2026-11-01&until=2026-11-02
 ```
 
+### List a filtered page
+
+Send `POST /memories/list` with `user_id` and `agent_id` and any filters. A response contains `results` and `next_cursor`. Copy `next_cursor` into `cursor` on the next request and keep the same scope and filters. A null cursor marks the last page. `limit` accepts 1 to 1,000 and defaults to 1,000.
+
+```json
+{
+  "user_id": "alice",
+  "agent_id": "tasks",
+  "scope": "long-term",
+  "filters": {"category": {"in": ["work.todo"]}, "priority": {"gte": 2}},
+  "limit": 50
+}
+```
+
+`scope` defaults to `all`, which includes long-term records and the supplied `run_id`, if any. `session` requires `run_id`. Flat metadata filters accept `eq`, `ne`, `in`, `nin`, `gt`, `gte`, `lt`, and `lte`. Range comparisons apply to JSON numbers. `since`, `until`, and `time_field` use the record-time rules above.
+
+The endpoint requires pgvector on PostgreSQL 16 or later. It applies all filters before taking a page in ascending record UUID order. Expired or malformed expiry dates are omitted by default. Set `show_expired` to inspect them. Each page reflects the database at the time of its request. Restart at the first page to see records inserted or reclassified before your cursor.
+
 ### Explore with OpenAPI docs
 
 1. Navigate to `http://localhost:8888/docs` (Compose) or `http://localhost:8000/docs` (raw Docker / uvicorn).
@@ -277,6 +295,7 @@ The OSS REST server exposes the following endpoints. None use the `/v1/` prefix.
 | `GET` | `/configure/providers` | List the LLM and embedder providers bundled in the container |
 | `POST` | `/memories` | Create memories |
 | `GET` | `/memories` | Get all memories (filter by `user_id`, `agent_id`, or `run_id`) |
+| `POST` | `/memories/list` | List a filtered page within a user and assistant scope |
 | `GET` | `/memories/{memory_id}` | Get a specific memory |
 | `PUT` | `/memories/{memory_id}` | Update a memory |
 | `DELETE` | `/memories/{memory_id}` | Delete a specific memory |

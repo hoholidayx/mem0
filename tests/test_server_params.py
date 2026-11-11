@@ -10,6 +10,7 @@ import importlib
 import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -58,6 +59,41 @@ def client(_mock_memory, monkeypatch):
 @pytest.fixture
 def mock_memory(_mock_memory):
     return _mock_memory
+
+
+def test_memory_page_cursor_is_bound_to_filters_and_scope(client, mock_memory):
+    from mem0.vector_stores.pgvector import PGVector
+
+    store = MagicMock(spec=PGVector)
+    store.collection_name = "test-collection"
+    mock_memory.vector_store = store
+    first, second = (str(UUID(int=i)) for i in (1, 2))
+    rows = [
+        MagicMock(id=memory_id, payload={"data": "Fixture", "user_id": "u1", "agent_id": "a1"})
+        for memory_id in (first, second)
+    ]
+    store.list_page = MagicMock(side_effect=[rows, rows[1:]])
+    filters = {f"field{i}": i for i in range(20)} | {"category": {"in": ["work.todo"]}}
+    request = {"user_id": "u1", "agent_id": "*", "filters": filters, "limit": 1}
+    response = client.post("/memories/list", json=request)
+    assert response.status_code == 200
+    first_page = response.json()
+    assert [row["id"] for row in first_page["results"]] == [first]
+    assert store.list_page.call_args.kwargs["top_k"] == 2
+    assert store.list_page.call_args.args[0] == filters | {"user_id": {"eq": "u1"}, "agent_id": {"eq": "*"}}
+    cursor = first_page["next_cursor"]
+    assert cursor
+    for changed in ({"user_id": "u2"}, {"filters": {"category": "other"}}, {"show_expired": True}):
+        response = client.post("/memories/list", json=request | changed | {"cursor": cursor})
+        assert response.status_code == 400
+    response = client.post("/memories/list", json=request | {"cursor": UUID(second).hex + cursor[32:]})
+    assert response.status_code == 400
+    assert store.list_page.call_count == 1
+    response = client.post("/memories/list", json=request | {"cursor": cursor})
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["results"]] == [second]
+    assert response.json()["next_cursor"] is None
+    assert store.list_page.call_args.kwargs["after_id"] == UUID(first)
 
 
 def test_record_time_filters_are_typed_and_keep_identity(client, mock_memory):

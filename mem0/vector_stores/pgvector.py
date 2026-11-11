@@ -2,9 +2,10 @@ import json
 import logging
 import re
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, List, Literal, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -34,13 +35,11 @@ from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
+NUMERIC_COMPARISONS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 OPERATOR_SQL_MAP = {
     "eq": ("payload->>%s = %s", False),
     "ne": ("payload->>%s != %s", False),
-    "gt": ("(payload->>%s)::numeric > %s", True),
-    "gte": ("(payload->>%s)::numeric >= %s", True),
-    "lt": ("(payload->>%s)::numeric < %s", True),
-    "lte": ("(payload->>%s)::numeric <= %s", True),
+    **{op: (f"(payload->>%s)::numeric {comparison} %s", True) for op, comparison in NUMERIC_COMPARISONS.items()},
     "in": ("payload->>%s = ANY(%s)", False),
     "nin": ("NOT (payload->>%s = ANY(%s))", False),
     "contains": ("payload->>%s LIKE %s", False),
@@ -73,7 +72,7 @@ class RecordTimeRange(BaseModel):
         return f"tstzrange(%s, %s, '[)') @> {timestamp}", (self.since, self.until, *timestamp_params)
 
 
-def _build_filter_conditions(filters):
+def _build_filter_conditions(filters, *, numeric_only=False):
     """Translate a processed filter dict into SQL WHERE fragments and parameter list."""
     conditions = []
     params = []
@@ -91,7 +90,7 @@ def _build_filter_conditions(filters):
         if key == "$or":
             or_groups = []
             for or_filter in value:
-                sub_conds, sub_params = _build_filter_conditions(or_filter)
+                sub_conds, sub_params = _build_filter_conditions(or_filter, numeric_only=numeric_only)
                 if sub_conds:
                     or_groups.append("(" + " AND ".join(sub_conds) + ")")
                     params.extend(sub_params)
@@ -102,7 +101,7 @@ def _build_filter_conditions(filters):
         if key == "$not":
             not_groups = []
             for not_filter in value:
-                sub_conds, sub_params = _build_filter_conditions(not_filter)
+                sub_conds, sub_params = _build_filter_conditions(not_filter, numeric_only=numeric_only)
                 if sub_conds:
                     not_groups.append("(" + " AND ".join(sub_conds) + ")")
                     params.extend(sub_params)
@@ -132,6 +131,13 @@ def _build_filter_conditions(filters):
                     escaped = str(op_value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                     conditions.append(template + " ESCAPE '\\'")
                     params.extend([key, f"%{escaped}%"])
+                elif is_numeric and numeric_only:
+                    comparison = NUMERIC_COMPARISONS[op]
+                    conditions.append(
+                        f"(CASE WHEN jsonb_typeof(payload->%s) = 'number' "
+                        f"THEN (payload->>%s)::numeric END) {comparison} %s"
+                    )
+                    params.extend([key, key, op_value])
                 else:
                     conditions.append(template)
                     if is_numeric:
@@ -573,22 +579,59 @@ class PGVector(VectorStoreBase):
         Returns:
             List[OutputData]: List of vectors.
         """
-        self._ensure_collection()
-        filter_conditions, filter_params = _build_filter_conditions(filters)
-        filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        conditions, params = _build_filter_conditions(filters)
+        return [self._list_rows(conditions, params, top_k)]
 
+    def list_page(
+        self,
+        filters: dict,
+        *,
+        scope: Literal["all", "session", "long-term"],
+        run_id: Optional[str],
+        visible_on: Optional[date],
+        after_id: Optional[UUID],
+        top_k: int,
+    ) -> List[OutputData]:
+        """Return one ordered page after filtering the scoped collection."""
+        conditions, params = _build_filter_conditions(filters, numeric_only=True)
+        if scope == "session":
+            conditions.append("payload->>'run_id' = %s")
+            params.append(run_id)
+        elif scope == "all" and run_id is not None:
+            conditions.append("(payload->>'run_id' IS NULL OR payload->>'run_id' = %s)")
+            params.append(run_id)
+        else:
+            conditions.append("payload->>'run_id' IS NULL")
+        if visible_on is not None:
+            conditions.append("""(
+                NULLIF(payload->>'expiration_date', '') IS NULL
+                OR CASE WHEN payload->>'expiration_date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                     AND pg_input_is_valid(payload->>'expiration_date', 'date')
+                     THEN (payload->>'expiration_date')::date >= %s END
+            )""")
+            params.append(visible_on)
+        if after_id is not None:
+            conditions.append("id > %s::uuid")
+            params.append(str(after_id))
+        return self._list_rows(conditions, params, top_k, ordered=True)
+
+    def _list_rows(self, conditions, params, top_k, *, ordered=False):
+        self._ensure_collection()
+        filter_clause = sql.SQL("WHERE " + " AND ".join(conditions)) if conditions else sql.SQL("")
+        order_clause = sql.SQL("ORDER BY id") if ordered else sql.SQL("")
         with self._get_cursor() as cur:
             cur.execute(
                 sql.SQL("""
                 SELECT id, payload
                 FROM {}
                 {}
+                {}
                 LIMIT %s
-                """).format(self._col(), filter_clause),
-                (*filter_params, top_k),
+                """).format(self._col(), filter_clause, order_clause),
+                (*params, top_k),
             )
             results = cur.fetchall()
-        return [[OutputData(id=str(r[0]), score=None, payload=r[1]) for r in results]]
+        return [OutputData(id=str(r[0]), score=None, payload=r[1]) for r in results]
 
     def __del__(self) -> None:
         """
