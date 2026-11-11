@@ -8,6 +8,7 @@ previously silently dropped by Pydantic v2's default extra='ignore' behavior.
 
 import importlib
 import os
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,21 +39,74 @@ def _mock_memory():
 
     with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key", "ADMIN_API_KEY": ""}):
         with patch("mem0.Memory.from_config", return_value=mock_instance):
-            yield mock_instance
+            with patch("server_state._load_overrides", return_value={}):
+                yield mock_instance
 
 
 @pytest.fixture
-def client(_mock_memory):
+def client(_mock_memory, monkeypatch):
     """Return a TestClient wired to the server app with mocked Memory."""
+    monkeypatch.setattr("auth.AUTH_DISABLED", True)
     import server.main as server_main
+
     with patch.dict(os.environ, {"ADMIN_API_KEY": ""}):
         importlib.reload(server_main)
+    monkeypatch.setattr(server_main, "_should_log_request", lambda request: False)
     return TestClient(server_main.app)
 
 
 @pytest.fixture
 def mock_memory(_mock_memory):
     return _mock_memory
+
+
+def test_record_time_filters_are_typed_and_keep_identity(client, mock_memory):
+    from mem0.vector_stores.pgvector import RECORD_TIME_RANGE, PGVector, RecordTimeRange
+
+    mock_memory.vector_store = MagicMock(spec=PGVector)
+    lower = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    upper = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    bounds = {"since": "2026-11-01", "until": "2026-11-02T08:00:00+08:00"}
+    assert client.get("/memories", params={"user_id": "u1", **bounds}).status_code == 200
+    assert mock_memory.get_all.call_args.kwargs["filters"] == {
+        "user_id": "u1",
+        RECORD_TIME_RANGE: RecordTimeRange(field="created_at", since=lower, until=upper),
+    }
+    response = client.post(
+        "/search",
+        json={
+            "query": "food",
+            "filters": {"user_id": "u1", "NOT": [{"run_id": "*"}]},
+            "time_field": "updated_at",
+            **bounds,
+        },
+    )
+    assert response.status_code == 200
+    assert mock_memory.search.call_args.kwargs["filters"] == {
+        "user_id": "u1",
+        "NOT": [{"run_id": "*"}],
+        RECORD_TIME_RANGE: RecordTimeRange(field="updated_at", since=lower, until=upper),
+    }
+
+
+@pytest.mark.parametrize(
+    "bounds, status, detail",
+    [
+        ({"since": "2026-02-30"}, 400, "since must be a valid date"),
+        ({"since": "2026-11-01T00:00:00"}, 400, "since must be a valid date"),
+        ({"since": "2026-11-01T00:00:00+08:60"}, 400, "since must be a valid date"),
+        ({"since": "2026-11-01", "until": "2026-10-31T19:00:00-05:00"}, 400, "since must be earlier"),
+        ({"since": "2026-11-01", "time_field": "expiration_date"}, 422, "time_field"),
+        ({"since": "2026-11-01"}, 400, "requires the pgvector store"),
+    ],
+)
+def test_invalid_or_unsupported_time_filters_fail_closed(client, mock_memory, bounds, status, detail):
+    list_response = client.get("/memories", params={"user_id": "u1", **bounds})
+    search_response = client.post("/search", json={"query": "food", "filters": {"user_id": "u1"}, **bounds})
+    assert list_response.status_code == search_response.status_code == status
+    assert detail in list_response.text and detail in search_response.text
+    mock_memory.get_all.assert_not_called()
+    mock_memory.search.assert_not_called()
 
 
 # ===========================================================================

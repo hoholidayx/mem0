@@ -240,6 +240,18 @@ curl -X POST http://localhost:8888/search \
 
 Each returned memory includes `score_details` only when explanation mode is enabled.
 
+### Filter by record time
+
+`GET /memories` accepts `since`, `until`, and `time_field` as query parameters. `POST /search` accepts them as top-level JSON fields. Use `created_at` (default) for when a memory was first stored or `updated_at` for when it was edited.
+
+`since` is inclusive and `until` is exclusive. Either bound can be omitted. Dates such as `2026-11-01` start at midnight UTC. Timestamps require an offset or `Z`, for example `2026-11-02T08:00:00+08:00`. The range applies before the result limit. Legacy stored timestamps without offsets are interpreted as UTC. Records with a missing or invalid value for the chosen field are excluded.
+
+Record-time filtering requires pgvector on PostgreSQL 16 or later. Semantic searches with a time range rank the matching records by exact vector distance before applying the candidate limit.
+
+```http
+GET /memories?user_id=alice&since=2026-11-01&until=2026-11-02
+```
+
 ### Explore with OpenAPI docs
 
 1. Navigate to `http://localhost:8888/docs` (Compose) or `http://localhost:8000/docs` (raw Docker / uvicorn).

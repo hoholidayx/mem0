@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import os
+import re
 import time
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional
 
 import telemetry
 from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, verify_auth
@@ -220,6 +222,15 @@ class MemoryUpdate(BaseModel):
     expiration_date: Optional[str] = Field(None, description="Expiration date in YYYY-MM-DD format, or null to clear.")
 
 
+RecordTimeField = Literal["created_at", "updated_at"]
+RECORD_DATE_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?"
+    r"(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9]))?"
+)
+SINCE_DESCRIPTION = "Inclusive record time, as a UTC date (YYYY-MM-DD) or a timestamp with an offset."
+UNTIL_DESCRIPTION = "Exclusive record time, as a UTC date (YYYY-MM-DD) or a timestamp with an offset."
+
+
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query.")
     user_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
@@ -230,6 +241,9 @@ class SearchRequest(BaseModel):
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
     explain: Optional[bool] = Field(None, description="Include score details for each search result.")
     show_expired: Optional[bool] = Field(None, description="Include expired memories.")
+    since: Optional[str] = Field(None, description=SINCE_DESCRIPTION)
+    until: Optional[str] = Field(None, description=UNTIL_DESCRIPTION)
+    time_field: RecordTimeField = "created_at"
 
 
 class GenerateInstructionsRequest(BaseModel):
@@ -461,8 +475,39 @@ def _serialize_memory(row: Any) -> Dict[str, Any]:
     }
 
 
-def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
-    results = get_memory_instance().vector_store.list(top_k=limit)
+def _parse_record_time(name: str, value: Optional[str]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if RECORD_DATE_PATTERN.fullmatch(value):
+        try:
+            if value.endswith("Z"):
+                value = value.removesuffix("Z") + "+00:00"
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            pass
+    raise HTTPException(status_code=400, detail=f"{name} must be a valid date or timestamp with an offset.")
+
+
+def _record_time_filters(memory, since: Optional[str], until: Optional[str], time_field: RecordTimeField) -> dict:
+    if since is None and until is None:
+        return {}
+    start, end = _parse_record_time("since", since), _parse_record_time("until", until)
+    if start is not None and end is not None and start >= end:
+        raise HTTPException(status_code=400, detail="since must be earlier than until.")
+
+    from mem0.vector_stores.pgvector import RECORD_TIME_RANGE, PGVector, RecordTimeRange
+
+    if not isinstance(memory.vector_store, PGVector):
+        raise HTTPException(status_code=400, detail="Record time filtering requires the pgvector store.")
+    return {RECORD_TIME_RANGE: RecordTimeRange(field=time_field, since=start, until=end)}
+
+
+def _list_all_memories(memory, limit: int, filters: dict) -> Dict[str, Any]:
+    query = {"filters": filters} if filters else {}
+    results = memory.vector_store.list(top_k=limit, **query)
     rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
     return {"results": [_serialize_memory(row) for row in rows]}
 
@@ -475,6 +520,9 @@ def get_all_memories(
     agent_id: Optional[str] = None,
     top_k: Optional[int] = Query(None, ge=0, le=ALL_MEMORIES_LIMIT),
     show_expired: bool = Query(False),
+    since: Optional[str] = Query(None, description=SINCE_DESCRIPTION),
+    until: Optional[str] = Query(None, description=UNTIL_DESCRIPTION),
+    time_field: RecordTimeField = "created_at",
     _auth=Depends(verify_auth),
 ):
     """Retrieve stored memories. Lists all memories when no identifier is provided (admin only)."""
@@ -484,15 +532,20 @@ def get_all_memories(
             if _auth is not None and _auth.role != "admin" and auth_type not in {"admin_api_key", "disabled"}:
                 raise HTTPException(status_code=403, detail="Admin role required to list all memories.")
             # Admin all-memory listing is intentionally raw; scoped get_all below applies expiry visibility.
-            return _list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
-        filters = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
-        }
+            memory = get_memory_instance()
+            return _list_all_memories(
+                memory,
+                limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT,
+                filters=_record_time_filters(memory, since, until, time_field),
+            )
+        memory = get_memory_instance()
+        filters = {k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v}
+        filters.update(_record_time_filters(memory, since, until, time_field))
         params = {"filters": filters}
         if top_k is not None:
             params["top_k"] = top_k
         params["show_expired"] = show_expired
-        return get_memory_instance().get_all(**params)
+        return memory.get_all(**params)
     except HTTPException:
         raise
     except Exception:
@@ -534,7 +587,9 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
             params["explain"] = search_req.explain
         if search_req.show_expired is not None:
             params["show_expired"] = search_req.show_expired
-        return get_memory_instance().search(query=search_req.query, filters=filters, **params)
+        memory = get_memory_instance()
+        filters.update(_record_time_filters(memory, search_req.since, search_req.until, search_req.time_field))
+        return memory.search(query=search_req.query, filters=filters, **params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:

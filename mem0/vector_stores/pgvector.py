@@ -2,10 +2,11 @@ import json
 import logging
 import re
 from contextlib import contextmanager
-from typing import Any, List, Optional
+from datetime import datetime
+from typing import Any, List, Literal, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # Try to import psycopg (psycopg3) first, then fall back to psycopg2
 try:
@@ -45,6 +46,31 @@ OPERATOR_SQL_MAP = {
     "contains": ("payload->>%s LIKE %s", False),
     "icontains": ("payload->>%s ILIKE %s", False),
 }
+RECORD_TIME_RANGE = "$record_time_range"
+RECORD_TIMESTAMP_PATTERN = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"([.][0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})?$"
+)
+TIME_ZONE_SUFFIX = r"(Z|[+-][0-9]{2}:[0-9]{2})$"
+
+
+class RecordTimeRange(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    field: Literal["created_at", "updated_at"]
+    since: Optional[datetime] = None
+    until: Optional[datetime] = None
+
+    def sql_condition(self):
+        # Guard casts for legacy payloads and interpret timestamps with no offset as UTC.
+        timestamp = """(CASE
+            WHEN payload->>%s ~ %s AND pg_input_is_valid(payload->>%s, 'timestamp with time zone')
+            THEN CASE WHEN payload->>%s ~ %s THEN (payload->>%s)::timestamptz
+                 ELSE (payload->>%s)::timestamp AT TIME ZONE 'UTC' END
+        END)"""
+        field = self.field
+        timestamp_params = (field, RECORD_TIMESTAMP_PATTERN, field, field, TIME_ZONE_SUFFIX, field, field)
+        return f"tstzrange(%s, %s, '[)') @> {timestamp}", (self.since, self.until, *timestamp_params)
 
 
 def _build_filter_conditions(filters):
@@ -56,6 +82,12 @@ def _build_filter_conditions(filters):
         return conditions, params
 
     for key, value in filters.items():
+        if key == RECORD_TIME_RANGE and isinstance(value, RecordTimeRange):
+            time_condition, time_params = value.sql_condition()
+            conditions.append(time_condition)
+            params.extend(time_params)
+            continue
+
         if key == "$or":
             or_groups = []
             for or_filter in value:
@@ -350,17 +382,30 @@ class PGVector(VectorStoreBase):
         self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
         filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        source = self._col()
+        prefix = sql.SQL("")
+        params = (vectors, *filter_params, top_k)
+        if isinstance((filters or {}).get(RECORD_TIME_RANGE), RecordTimeRange):
+            # HNSW can discard out-of-range candidates after its approximate scan.
+            # Rank the filtered rows so a narrow range still has its own candidate pool.
+            prefix = sql.SQL("WITH time_matches AS MATERIALIZED (SELECT id, vector, payload FROM {} {})").format(
+                source, filter_clause
+            )
+            source = sql.Identifier("time_matches")
+            filter_clause = sql.SQL("")
+            params = (*filter_params, vectors, top_k)
 
         with self._get_cursor() as cur:
             cur.execute(
                 sql.SQL("""
+                {}
                 SELECT id, vector <=> %s::vector AS distance, payload
                 FROM {}
                 {}
                 ORDER BY distance
                 LIMIT %s
-                """).format(self._col(), filter_clause),
-                (vectors, *filter_params, top_k),
+                """).format(prefix, source, filter_clause),
+                params,
             )
 
             results = cur.fetchall()
